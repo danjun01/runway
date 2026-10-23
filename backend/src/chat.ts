@@ -3,6 +3,11 @@ import type { Response } from "express";
 
 const client = new Anthropic();
 
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-5-5";
+const EFFORT = (process.env.ANTHROPIC_EFFORT || "medium") as "low" | "medium" | "high" | "xhigh" | "max";
+// Server-side refusal fallback; only these models accept the "default" form.
+const FALLBACK_MODELS = new Set(["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"]);
+
 const SYSTEM_PROMPT = `You are Runway, a personal budgeting assistant inside an iPhone app. The user has linked their bank and credit card accounts, and the app gives you a JSON snapshot of their finances below: balances, credit card statements and due dates, this month's budget categories, recurring income and bills, recent transactions, and a "safeToSpend" breakdown the app already computed.
 
 How to answer:
@@ -39,12 +44,11 @@ export async function streamChat(body: ChatRequestBody, res: Response) {
 
   try {
     const stream = client.beta.messages.stream({
-      model: "claude-opus-5-5",
+      model: MODEL,
       max_tokens: 16000,
       thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
+      output_config: { effort: EFFORT },
+      ...(FALLBACK_MODELS.has(MODEL) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
       system: [
         { type: "text", text: SYSTEM_PROMPT },
         {

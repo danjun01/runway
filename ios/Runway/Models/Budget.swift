@@ -1,6 +1,7 @@
 import Foundation
 
-/// One envelope in the budget, YNAB style: a monthly amount you plan to spend.
+/// One bucket in the budget, YNAB style: money assigned each month to a
+/// purpose. `monthlyAmount` is what's assigned.
 struct BudgetCategory: Codable, Equatable, Identifiable, Hashable {
     var id: String
     var name: String
@@ -8,6 +9,13 @@ struct BudgetCategory: Codable, Equatable, Identifiable, Hashable {
     /// Bills (rent, utilities, loans) are reserved out of safe-to-spend until paid.
     var isFixed: Bool
     var monthlyAmount: Double
+
+    var isCustom: Bool { id.hasPrefix("custom:") }
+
+    static func custom(name: String, isFixed: Bool, amount: Double) -> BudgetCategory {
+        BudgetCategory(id: "custom:\(UUID().uuidString)", name: name, symbol: isFixed ? "doc.text.fill" : "tray.fill",
+                       isFixed: isFixed, monthlyAmount: amount)
+    }
 }
 
 extension BudgetCategory {
@@ -57,6 +65,15 @@ extension BudgetCategory {
         default:
             return "other"
         }
+    }
+
+    /// The bucket a transaction lands in once the user's own rules
+    /// (merchant key -> bucket id) are applied. Income and card payments are
+    /// never spending, whatever the rules say.
+    static func bucketId(for t: Transaction, rules: [String: String], budgets: [BudgetCategory]) -> String? {
+        if t.category == "INCOME" || t.detailedCategory == "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" { return nil }
+        if let id = rules[MerchantKey.of(t.displayName)], budgets.contains(where: { $0.id == id }) { return id }
+        return categoryId(for: t)
     }
 }
 

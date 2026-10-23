@@ -27,7 +27,7 @@ The app does all of the budgeting math itself (`ios/Runway/Services/BudgetEngine
 
 ```
   cash in checking
-+ paychecks expected before month end   (from Plaid's recurring-income detection)
++ paychecks expected before month end   (projected from your recurring income)
 - full current balance of every credit card
 - budgeted bills not yet paid this month
 - your monthly savings goal (optional, set in Accounts)
@@ -35,6 +35,14 @@ The app does all of the budgeting math itself (`ios/Runway/Services/BudgetEngine
 ```
 
 Reserving the *whole* card balance (not just the minimum) is what keeps you from ever carrying a statement balance: anything you put on a card is treated as already spent. Each card also shows exactly what to pay, and by when, to avoid interest.
+
+The card under the number also says how much of it is projected pay versus money you already have, and each card shows whether checking already covers the statement or it's waiting on a paycheck.
+
+### Income and buckets
+
+Runway finds recurring income from Plaid's recurring streams and from regular deposits in your history, and labels it on the **Income** screen (tap the income card on the Budget tab). Confirm a source, fix its amount or schedule, mark it as not income, or add income Runway can't see. Regular transfers in (Venmo, Zelle) are suggested but not counted until you confirm them.
+
+The budget is a zero-based monthly plan, like YNAB, with one difference: you can assign income you're expecting, not just money that's already in the account. Each month's paychecks are marked **arrived** or **expected**, and the plan shows how much is left to assign. Arrived money backs your savings goal and bills first, then flexible buckets; anything that depends on a paycheck that hasn't landed says so ("$300 waits on Oct 30 pay"). Add your own buckets with **New bucket**, and long-press any transaction to move that merchant to a different bucket.
 
 ## Run it on your Mac
 

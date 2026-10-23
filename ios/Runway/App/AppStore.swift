@@ -11,6 +11,10 @@ final class AppStore {
     var snapshot: Snapshot?
     var budgets: [BudgetCategory] = BudgetCategory.defaults
     var monthlySavingsGoal: Double = 0
+    /// Income sources the user confirmed, edited, ignored, or added.
+    var incomeSources: [IncomeSource] = []
+    /// Merchant key -> bucket id, set by moving a transaction to a bucket.
+    var bucketRules: [String: String] = [:]
     var hasOnboarded = false
     var isDemo = false
     var chat: [ChatMessage] = []
@@ -46,7 +50,8 @@ final class AppStore {
     }
 
     var engine: BudgetEngine {
-        BudgetEngine(snapshot: snapshot ?? DemoData.empty, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal)
+        BudgetEngine(snapshot: snapshot ?? DemoData.empty, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
+                     savedIncome: incomeSources, bucketRules: bucketRules)
     }
 
     var institutions: [Institution] { snapshot?.institutions ?? [] }
@@ -126,6 +131,64 @@ final class AppStore {
         save()
     }
 
+    func addBucket(_ category: BudgetCategory) {
+        budgets.append(category)
+        save()
+    }
+
+    func updateBucket(_ category: BudgetCategory) {
+        guard let index = budgets.firstIndex(where: { $0.id == category.id }) else { return }
+        budgets[index] = category
+        save()
+    }
+
+    func deleteBucket(_ id: String) {
+        budgets.removeAll { $0.id == id }
+        bucketRules = bucketRules.filter { $0.value != id }
+        save()
+    }
+
+    /// Sends this merchant's transactions, past and future, to a bucket.
+    func move(_ transaction: Transaction, to bucketId: String) {
+        let key = MerchantKey.of(transaction.displayName)
+        guard !key.isEmpty else { return }
+        if BudgetCategory.categoryId(for: transaction) == bucketId {
+            bucketRules[key] = nil
+        } else {
+            bucketRules[key] = bucketId
+        }
+        save()
+    }
+
+    func bucket(for transaction: Transaction) -> BudgetCategory? {
+        BudgetCategory.bucketId(for: transaction, rules: bucketRules, budgets: budgets)
+            .flatMap { id in budgets.first { $0.id == id } }
+    }
+
+    // MARK: Income
+
+    /// Saves a user's edit to an income source (detected or manual).
+    func saveIncome(_ source: IncomeSource) {
+        if let index = incomeSources.firstIndex(where: { $0.id == source.id }) {
+            incomeSources[index] = source
+        } else {
+            incomeSources.append(source)
+        }
+        save()
+    }
+
+    func setIncomeStatus(_ source: IncomeSource, _ status: IncomeSource.Status) {
+        var source = source
+        source.status = status
+        saveIncome(source)
+    }
+
+    /// Manual sources are removed; detected ones go back to being auto-detected.
+    func forgetIncome(_ source: IncomeSource) {
+        incomeSources.removeAll { $0.id == source.id }
+        save()
+    }
+
     func finishOnboarding() {
         hasOnboarded = true
         save()
@@ -135,6 +198,8 @@ final class AppStore {
         snapshot = nil
         budgets = BudgetCategory.defaults
         monthlySavingsGoal = 0
+        incomeSources = []
+        bucketRules = [:]
         hasOnboarded = false
         isDemo = false
         chat = []
@@ -179,6 +244,9 @@ final class AppStore {
         var snapshot: Snapshot?
         var budgets: [BudgetCategory]
         var monthlySavingsGoal: Double
+        // Optional so state saved by earlier versions still loads.
+        var incomeSources: [IncomeSource]?
+        var bucketRules: [String: String]?
         var hasOnboarded: Bool
         var isDemo: Bool
         var chat: [ChatMessage]
@@ -191,7 +259,7 @@ final class AppStore {
     func save() {
         guard !isPreview else { return }
         let state = Persisted(snapshot: isDemo ? nil : snapshot, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
-                              hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
+                              incomeSources: incomeSources, bucketRules: bucketRules, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
         do {
             try FileManager.default.createDirectory(at: URL.applicationSupportDirectory, withIntermediateDirectories: true)
             try JSONEncoder().encode(state).write(to: Self.fileURL, options: [.atomic, .completeFileProtection])
@@ -207,6 +275,8 @@ final class AppStore {
         snapshot = state.isDemo ? DemoData.snapshot() : state.snapshot
         budgets = state.budgets
         monthlySavingsGoal = state.monthlySavingsGoal
+        incomeSources = state.incomeSources ?? []
+        bucketRules = state.bucketRules ?? [:]
         hasOnboarded = state.hasOnboarded
         chat = state.chat
     }

@@ -77,6 +77,7 @@ enum DemoData {
             }
             if dom == 22 { add(day, "Chase Card Payment", 1380, "LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", account: "chk") }
             if dom == 24 { add(day, "Transfer to Savings", 300, "TRANSFER_OUT", "TRANSFER_OUT_SAVINGS", account: "chk") }
+            if dom == 2 { add(day, "Venmo from Alex", -600, "TRANSFER_IN", "TRANSFER_IN_ACCOUNT_TRANSFER", account: "chk") }
             day = cal.date(byAdding: .day, value: 1, to: day)!
         }
 
@@ -100,6 +101,11 @@ enum DemoData {
                   averageAmount: 2150, lastAmount: 2150, frequency: "BIWEEKLY", lastDate: Day.string(lastPayday),
                   predictedNextDate: Day.string(cal.date(byAdding: .day, value: 14, to: lastPayday)!),
                   category: "INCOME", isActive: true),
+            .init(id: "venmo", accountId: "chk", direction: "inflow", description: "VENMO CASHOUT", merchant: "Venmo from Alex",
+                  averageAmount: 600, lastAmount: 600, frequency: "MONTHLY",
+                  lastDate: Day.string(cal.date(byAdding: .day, value: 1, to: Day.startOfMonth(today))!),
+                  predictedNextDate: Day.string(cal.date(byAdding: DateComponents(month: 1, day: 1), to: Day.startOfMonth(today))!),
+                  category: "TRANSFER_IN", isActive: true),
             .init(id: "rent", accountId: "chk", direction: "outflow", description: "PARKVIEW APTS", merchant: "Parkview Apartments",
                   averageAmount: 1650, lastAmount: 1650, frequency: "MONTHLY", lastDate: Day.string(Day.startOfMonth(today)),
                   predictedNextDate: Day.string(cal.date(byAdding: .month, value: 1, to: Day.startOfMonth(today))!),

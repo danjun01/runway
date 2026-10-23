@@ -205,5 +205,6 @@ function stream(s: TransactionStream, direction: "inflow" | "outflow") {
     predictedNextDate: s.predicted_next_date ?? null,
     category: s.personal_finance_category?.primary ?? null,
     isActive: s.is_active,
+    transactionIds: s.transaction_ids,
   };
 }

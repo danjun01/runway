@@ -92,9 +92,35 @@ struct RecurringStream: Codable, Equatable, Identifiable, Hashable {
     var predictedNextDate: String?
     var category: String?
     var isActive: Bool
+    /// The deposits or charges Plaid grouped into this stream.
+    var transactionIds: [String]?
 
     var isIncome: Bool { direction == "inflow" && (category == nil || category == "INCOME") }
     var displayName: String { merchant ?? description }
+}
+
+/// A loose, stable name for a merchant or payer, so "ACME CORP PAYROLL PPD
+/// ID: 1234" and "Acme Corp" can be recognized as the same place.
+enum MerchantKey {
+    private static let noise: Set<String> = [
+        "ppd", "id", "des", "indn", "web", "ach", "dir", "dep", "direct", "deposit", "from", "the", "inc", "llc", "co", "pos",
+    ]
+
+    static func of(_ name: String) -> String {
+        let words = name.lowercased()
+            .map { $0.isLetter ? $0 : " " }
+            .split(separator: " ")
+            .map(String.init)
+            .filter { $0.count > 1 && !noise.contains($0) }
+        return words.prefix(3).joined(separator: " ")
+    }
+
+    /// True when one key is a word-for-word prefix of the other.
+    static func matches(_ a: String, _ b: String) -> Bool {
+        let aw = a.split(separator: " "), bw = b.split(separator: " ")
+        let n = min(aw.count, bw.count)
+        return n > 0 && aw.prefix(n) == bw.prefix(n)
+    }
 }
 
 /// Calendar-day helpers. All budgeting math works in whole local days.

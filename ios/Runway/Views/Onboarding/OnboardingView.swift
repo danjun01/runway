@@ -178,7 +178,27 @@ private struct ReviewStep: View {
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
 
-                    SectionHeader(title: "Monthly budget", trailing: engine.totalBudgeted.currency())
+                    let income = engine.countedIncome
+                    if !income.isEmpty {
+                        SectionHeader(title: "Income we found", trailing: "\(income.reduce(0) { $0 + $1.monthlyEstimate }.currency())/mo")
+                        Card {
+                            ForEach(income) { source in
+                                HStack {
+                                    CategoryIcon(symbol: "arrow.down.left", color: Theme.positive)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(source.name).lineLimit(1)
+                                        Text(source.frequency.label).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(source.amount.currency()).monospacedDigit()
+                                }
+                            }
+                            Text("You can assign paychecks before they arrive. Confirm or fix these anytime from the Budget tab.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    SectionHeader(title: "Assigned each month", trailing: engine.totalBudgeted.currency())
                     Card {
                         ForEach(store.budgets.filter { $0.monthlyAmount > 0 }) { category in
                             HStack {

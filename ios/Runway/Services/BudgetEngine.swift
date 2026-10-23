@@ -8,27 +8,37 @@ struct BudgetEngine {
     /// Money to set aside each month before anything counts as spendable.
     var monthlySavingsGoal: Double
     var today: Date = .now
+    /// Income sources the user confirmed, edited, ignored, or added. Detected
+    /// sources fill in the rest (see Income.swift).
+    var savedIncome: [IncomeSource] = []
+    /// Merchant key -> bucket id, from "move to bucket".
+    var bucketRules: [String: String] = [:]
 
-    private var cal: Calendar { Day.calendar }
-    private var monthStart: Date { Day.startOfMonth(today) }
-    private var monthEnd: Date { Day.endOfMonth(today) }
+    var cal: Calendar { Day.calendar }
+    var monthStart: Date { Day.startOfMonth(today) }
+    var monthEnd: Date { Day.endOfMonth(today) }
+    var startOfToday: Date { cal.startOfDay(for: today) }
 
     // MARK: Spending
 
+    func bucketId(for t: Transaction) -> String? {
+        BudgetCategory.bucketId(for: t, rules: bucketRules, budgets: budgets)
+    }
+
     var spendingThisMonth: [Transaction] {
         snapshot.transactions.filter { t in
-            t.day >= monthStart && t.day <= monthEnd && BudgetCategory.categoryId(for: t) != nil
+            t.day >= monthStart && t.day <= monthEnd && bucketId(for: t) != nil
         }
     }
 
     func spent(in categoryId: String) -> Double {
         spendingThisMonth
-            .filter { BudgetCategory.categoryId(for: $0) == categoryId }
+            .filter { bucketId(for: $0) == categoryId }
             .reduce(0) { $0 + $1.amount }
     }
 
     func transactions(in categoryId: String) -> [Transaction] {
-        spendingThisMonth.filter { BudgetCategory.categoryId(for: $0) == categoryId }
+        spendingThisMonth.filter { bucketId(for: $0) == categoryId }
     }
 
     var totalBudgeted: Double { budgets.reduce(0) { $0 + $1.monthlyAmount } }
@@ -41,21 +51,21 @@ struct BudgetEngine {
 
     // MARK: Suggested budget
 
-    /// Average monthly spend per envelope over up to the last 90 days of
+    /// Average monthly spend per bucket over up to the last 90 days of
     /// history, rounded up to the nearest $10.
     func suggestedBudgets() -> [BudgetCategory] {
-        let windowStart = cal.date(byAdding: .day, value: -90, to: cal.startOfDay(for: today))!
-        let history = snapshot.transactions.filter { $0.day >= windowStart && $0.day < cal.startOfDay(for: today) }
-        guard let earliest = history.map(\.day).min() else { return BudgetCategory.defaults }
+        let windowStart = cal.date(byAdding: .day, value: -90, to: startOfToday)!
+        let history = snapshot.transactions.filter { $0.day >= windowStart && $0.day < startOfToday }
+        guard let earliest = history.map(\.day).min() else { return budgets }
         let days = max(14, cal.dateComponents([.day], from: earliest, to: today).day ?? 30)
         let months = Double(days) / 30.4
 
         var totals: [String: Double] = [:]
         for t in history {
-            guard let id = BudgetCategory.categoryId(for: t) else { continue }
+            guard let id = bucketId(for: t) else { continue }
             totals[id, default: 0] += t.amount
         }
-        return BudgetCategory.defaults.map { category in
+        return budgets.map { category in
             var c = category
             let monthly = max(0, (totals[c.id] ?? 0) / months)
             c.monthlyAmount = monthly < 1 ? 0 : (monthly / 10).rounded(.up) * 10
@@ -73,6 +83,7 @@ struct BudgetEngine {
 
     struct SafeToSpend {
         var cash: Double
+        /// Paychecks projected to land between now and month end. Not in the account yet.
         var expectedIncome: Double
         var incomeEvents: [IncomeEvent]
         var creditCardBalances: Double
@@ -82,6 +93,8 @@ struct BudgetEngine {
 
         var amount: Double { cash + expectedIncome - creditCardBalances - billsRemaining - savingsGoal }
         var perDay: Double { max(0, amount) / Double(max(1, daysLeft)) }
+        /// The same number if no more paychecks came this month: what's backed by money you already have.
+        var inHand: Double { amount - expectedIncome }
     }
 
     var cashAccounts: [Account] { snapshot.accounts.filter(\.isSpendableCash) }
@@ -104,31 +117,11 @@ struct BudgetEngine {
         )
     }
 
+    /// Paychecks from counted income sources that haven't arrived yet, from
+    /// today (or a few days ago, if one is running late) through `end`.
     func upcomingIncome(through end: Date) -> [IncomeEvent] {
-        let startOfToday = cal.startOfDay(for: today)
-        var events: [IncomeEvent] = []
-        for stream in snapshot.recurring where stream.isIncome && stream.isActive {
-            let last = Day.parse(stream.lastDate)
-            var next = stream.predictedNextDate.map(Day.parse) ?? advance(last, by: stream.frequency)
-            // A paycheck that landed today is already in the balance.
-            while let date = next, date <= end {
-                if date >= startOfToday && date > last {
-                    events.append(IncomeEvent(name: stream.displayName, date: Day.string(date), amount: stream.averageAmount))
-                }
-                next = advance(date, by: stream.frequency)
-            }
-        }
-        return events.sorted { $0.date < $1.date }
-    }
-
-    private func advance(_ date: Date, by frequency: String) -> Date? {
-        switch frequency {
-        case "WEEKLY": return cal.date(byAdding: .day, value: 7, to: date)
-        case "BIWEEKLY": return cal.date(byAdding: .day, value: 14, to: date)
-        case "SEMI_MONTHLY": return cal.date(byAdding: .day, value: 15, to: date)
-        case "MONTHLY": return cal.date(byAdding: .month, value: 1, to: date)
-        case "ANNUALLY": return cal.date(byAdding: .year, value: 1, to: date)
-        default: return nil
+        expectedPaychecks(through: end).map {
+            IncomeEvent(name: $0.name, date: Day.string($0.date), amount: $0.amount)
         }
     }
 
@@ -146,11 +139,23 @@ struct BudgetEngine {
         var minimumPayment: Double?
         var apr: Double?
         var isOverdue: Bool
+        /// Where the money to pay `payToAvoidInterest` by the due date comes from.
+        var funding: CardFunding = .nothingDue
         var id: String { account.id }
     }
 
+    enum CardFunding: Hashable {
+        case nothingDue
+        /// Checking already covers it.
+        case cashOnHand
+        /// Covered once the paycheck projected for this date arrives.
+        case paycheck(Date)
+        /// Not covered by cash plus paychecks due before the card is.
+        case short(Double)
+    }
+
     var cardPlans: [CardPlan] {
-        creditAccounts.map { account in
+        let plans = creditAccounts.map { account in
             let card = snapshot.creditCards.first { $0.accountId == account.id }
             let balance = max(0, account.balance)
             var owedOnStatement = balance
@@ -174,6 +179,39 @@ struct BudgetEngine {
             )
         }
         .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
+        return fundCards(plans)
+    }
+
+    /// Pays statements in due-date order, first from cash in checking, then
+    /// from paychecks projected to land before each due date.
+    private func fundCards(_ plans: [CardPlan]) -> [CardPlan] {
+        var cash = max(0, cashAccounts.reduce(0) { $0 + $1.balance })
+        var paychecks = expectedPaychecks(through: plans.compactMap(\.dueDate).max() ?? monthEnd)
+            .map { (date: $0.date, left: $0.amount) }
+        return plans.map { plan in
+            var plan = plan
+            var need = plan.payToAvoidInterest
+            guard need > 0.005 else { return plan }
+            let fromCash = min(cash, need)
+            cash -= fromCash
+            need -= fromCash
+            var lastPaycheck: Date?
+            for i in paychecks.indices where need > 0.005 && paychecks[i].left > 0 {
+                guard paychecks[i].date <= (plan.dueDate ?? monthEnd) else { break }
+                let take = min(paychecks[i].left, need)
+                paychecks[i].left -= take
+                need -= take
+                lastPaycheck = paychecks[i].date
+            }
+            if need > 0.005 {
+                plan.funding = .short(need)
+            } else if let lastPaycheck {
+                plan.funding = .paycheck(lastPaycheck)
+            } else {
+                plan.funding = .cashOnHand
+            }
+            return plan
+        }
     }
 
     // MARK: Chat context
@@ -182,12 +220,13 @@ struct BudgetEngine {
     /// totals instead of raw history for older months.
     func chatContext() -> ChatContext {
         let safe = safeToSpend
+        let plan = self.plan
         let accountName = Dictionary(snapshot.accounts.map { ($0.id, $0.displayName) }, uniquingKeysWith: { a, _ in a })
         let recentCutoff = cal.date(byAdding: .day, value: -60, to: today)!
 
         var monthly: [String: [String: Double]] = [:]
         for t in snapshot.transactions {
-            guard let id = BudgetCategory.categoryId(for: t) else { continue }
+            guard let id = bucketId(for: t) else { continue }
             let month = String(t.date.prefix(7))
             monthly[month, default: [:]][name(of: id), default: 0] += t.amount
         }
@@ -195,7 +234,7 @@ struct BudgetEngine {
         return ChatContext(
             today: Day.string(today),
             daysLeftInMonth: safe.daysLeft,
-            conventions: "Transaction amounts: positive = money spent, negative = money received. Credit card balances are amounts owed.",
+            conventions: "Transaction amounts: positive = money spent, negative = money received. Credit card balances are amounts owed. \"Arrived\" income is already in the account; \"expected\" income is projected from the user's pay schedule and is not in the account yet.",
             safeToSpend: ChatContext.Safe(
                 amount: safe.amount.rounded2,
                 perDay: safe.perDay.rounded2,
@@ -205,7 +244,36 @@ struct BudgetEngine {
                 minusCreditCardBalances: safe.creditCardBalances.rounded2,
                 minusUnpaidBillsThisMonth: safe.billsRemaining.rounded2,
                 minusMonthlySavingsGoal: safe.savingsGoal.rounded2,
-                method: "spendable cash + income expected before month end - full current balance of every credit card - budgeted bills not yet paid this month - savings goal"
+                backedByMoneyInHand: safe.inHand.rounded2,
+                method: "spendable cash + projected paychecks before month end - full current balance of every credit card - assigned bills not yet paid this month - savings goal. backedByMoneyInHand is the same without the projected paychecks."
+            ),
+            income: ChatContext.Income(
+                sources: incomeSources.map { source in
+                    ChatContext.IncomeLine(
+                        name: source.name,
+                        status: Self.describe(source.status),
+                        amountPerPaycheck: source.amount.rounded2, frequency: source.frequency.label.lowercased(),
+                        nextPayday: nextPayday(of: source).map(Day.string), monthlyEstimate: source.monthlyEstimate.rounded2)
+                },
+                thisMonth: plan.paychecks.map {
+                    ChatContext.PaycheckLine(name: $0.name, date: Day.string($0.date), amount: $0.amount.rounded2,
+                                             state: Self.describe($0.state))
+                }
+            ),
+            plan: ChatContext.PlanInfo(
+                incomeArrivedThisMonth: plan.arrived.rounded2,
+                incomeExpectedRestOfMonth: plan.expected.rounded2,
+                savingsGoal: plan.savingsGoal.rounded2,
+                totalAssigned: plan.assigned.rounded2,
+                leftToAssign: plan.leftToAssign.rounded2,
+                method: "Zero-based monthly plan. This month's income (arrived + expected) is assigned to the savings goal, then bills, then flexible buckets, in that order; arrived money backs the earliest assignments and the rest waits on projected paychecks.",
+                buckets: plan.buckets.filter { $0.assigned > 0 || $0.spent > 0 }.map {
+                    ChatContext.BucketLine(bucket: $0.category.name, kind: $0.category.isFixed ? "bill" : "flexible",
+                                           assigned: $0.assigned, spent: $0.spent.rounded2, available: $0.available.rounded2,
+                                           backedByArrivedIncome: $0.fromArrived.rounded2,
+                                           waitingOnProjectedIncome: $0.fromExpected.rounded2,
+                                           waitingOnPaycheckDate: $0.waitingOn.map(Day.string))
+                }
             ),
             accounts: snapshot.accounts.map {
                 ChatContext.AccountLine(name: $0.displayName, institution: $0.institution, type: $0.subtype ?? $0.type,
@@ -215,35 +283,55 @@ struct BudgetEngine {
                 ChatContext.Card(name: $0.account.displayName, currentBalance: $0.currentBalance.rounded2,
                       statementBalance: $0.statementBalance, payToAvoidInterest: $0.payToAvoidInterest.rounded2,
                       dueDate: $0.dueDate.map(Day.string), newSpendingSinceStatement: $0.newSpending.rounded2,
-                      minimumPayment: $0.minimumPayment, purchaseApr: $0.apr, isOverdue: $0.isOverdue)
-            },
-            budgetThisMonth: budgets.filter { $0.monthlyAmount > 0 || spent(in: $0.id) > 0 }.map {
-                let used = spent(in: $0.id)
-                return ChatContext.BudgetLine(category: $0.name, kind: $0.isFixed ? "bill" : "flexible",
-                                              monthlyBudget: $0.monthlyAmount, spent: used.rounded2,
-                                              remaining: ($0.monthlyAmount - used).rounded2)
+                      minimumPayment: $0.minimumPayment, purchaseApr: $0.apr, isOverdue: $0.isOverdue,
+                      statementCoveredBy: Self.describe($0.funding))
             },
             spendingByMonth: monthly.keys.sorted().suffix(6).map { month in
                 ChatContext.MonthTotal(month: month, total: monthly[month]!.values.reduce(0, +).rounded2,
                       byCategory: monthly[month]!.mapValues(\.rounded2))
             },
-            recurring: snapshot.recurring.filter(\.isActive).map {
-                ChatContext.Recurring(name: $0.displayName, direction: $0.direction == "inflow" ? "income" : "bill",
-                      averageAmount: $0.averageAmount.rounded2, frequency: $0.frequency.lowercased(),
-                      lastDate: $0.lastDate, nextDate: $0.predictedNextDate)
+            recurringBills: snapshot.recurring.filter { $0.isActive && $0.direction == "outflow" }.map {
+                ChatContext.Recurring(name: $0.displayName, averageAmount: $0.averageAmount.rounded2,
+                      frequency: $0.frequency.lowercased(), lastDate: $0.lastDate, nextDate: $0.predictedNextDate)
             },
             recentTransactions: snapshot.transactions
                 .filter { $0.day >= recentCutoff }
                 .prefix(300)
                 .map {
                     ChatContext.Txn(date: $0.date, name: $0.displayName, amount: $0.amount.rounded2,
-                          category: BudgetCategory.categoryId(for: $0).map(name(of:)) ?? $0.category.lowercased(),
+                          category: bucketId(for: $0).map(name(of:)) ?? $0.category.lowercased(),
                           account: accountName[$0.accountId] ?? "", pending: $0.pending)
                 }
         )
     }
 
-    private func name(of categoryId: String) -> String {
+    private static func describe(_ status: IncomeSource.Status) -> String {
+        switch status {
+        case .confirmed: "confirmed by user"
+        case .detected: "auto-detected, counted"
+        case .suggested: "possible income, not counted until the user confirms it"
+        case .ignored: "user said this is not income, not counted"
+        }
+    }
+
+    private static func describe(_ state: Paycheck.State) -> String {
+        switch state {
+        case .arrived: "arrived"
+        case .expected: "expected (projected, not in the account yet)"
+        case .missed: "was expected but hasn't arrived (not counted)"
+        }
+    }
+
+    private static func describe(_ funding: CardFunding) -> String {
+        switch funding {
+        case .nothingDue: "nothing due"
+        case .cashOnHand: "cash already in checking"
+        case .paycheck(let date): "projected paycheck on \(Day.string(date)) (not arrived yet)"
+        case .short(let amount): "short by \(amount.rounded2) even counting paychecks before the due date"
+        }
+    }
+
+    func name(of categoryId: String) -> String {
         budgets.first { $0.id == categoryId }?.name ?? categoryId
     }
 }
@@ -253,7 +341,34 @@ struct ChatContext: Encodable {
         var amount, perDay, spendableCash, expectedIncomeBeforeMonthEnd: Double
         var incomeEvents: [BudgetEngine.IncomeEvent]
         var minusCreditCardBalances, minusUnpaidBillsThisMonth, minusMonthlySavingsGoal: Double
+        var backedByMoneyInHand: Double
         var method: String
+    }
+    struct Income: Encodable {
+        var sources: [IncomeLine]
+        var thisMonth: [PaycheckLine]
+    }
+    struct IncomeLine: Encodable {
+        var name, status: String
+        var amountPerPaycheck: Double
+        var frequency: String
+        var nextPayday: String?
+        var monthlyEstimate: Double
+    }
+    struct PaycheckLine: Encodable {
+        var name, date: String
+        var amount: Double
+        var state: String
+    }
+    struct PlanInfo: Encodable {
+        var incomeArrivedThisMonth, incomeExpectedRestOfMonth, savingsGoal, totalAssigned, leftToAssign: Double
+        var method: String
+        var buckets: [BucketLine]
+    }
+    struct BucketLine: Encodable {
+        var bucket, kind: String
+        var assigned, spent, available, backedByArrivedIncome, waitingOnProjectedIncome: Double
+        var waitingOnPaycheckDate: String?
     }
     struct AccountLine: Encodable {
         var name, institution, type: String
@@ -269,10 +384,7 @@ struct ChatContext: Encodable {
         var newSpendingSinceStatement: Double
         var minimumPayment, purchaseApr: Double?
         var isOverdue: Bool
-    }
-    struct BudgetLine: Encodable {
-        var category, kind: String
-        var monthlyBudget, spent, remaining: Double
+        var statementCoveredBy: String
     }
     struct MonthTotal: Encodable {
         var month: String
@@ -280,7 +392,7 @@ struct ChatContext: Encodable {
         var byCategory: [String: Double]
     }
     struct Recurring: Encodable {
-        var name, direction: String
+        var name: String
         var averageAmount: Double
         var frequency, lastDate: String
         var nextDate: String?
@@ -296,11 +408,12 @@ struct ChatContext: Encodable {
     var daysLeftInMonth: Int
     var conventions: String
     var safeToSpend: Safe
+    var income: Income
+    var plan: PlanInfo
     var accounts: [AccountLine]
     var creditCards: [Card]
-    var budgetThisMonth: [BudgetLine]
     var spendingByMonth: [MonthTotal]
-    var recurring: [Recurring]
+    var recurringBills: [Recurring]
     var recentTransactions: [Txn]
 }
 

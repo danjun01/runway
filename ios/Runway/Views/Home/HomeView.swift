@@ -2,15 +2,25 @@ import SwiftUI
 
 struct HomeView: View {
     @Environment(AppStore.self) private var store
+    @State private var addingBucket = false
+    @State private var path = NavigationPath()
+
+    private enum Route: Hashable { case income }
 
     var body: some View {
         let engine = store.engine
-        NavigationStack {
+        let plan = engine.plan
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     SafeToSpendCard(safe: engine.safeToSpend)
 
                     QuickAsk()
+
+                    NavigationLink(value: Route.income) {
+                        PlanCard(plan: plan, unreviewed: engine.unreviewedIncome.count)
+                    }
+                    .buttonStyle(.plain)
 
                     let plans = engine.cardPlans
                     if !plans.isEmpty {
@@ -18,22 +28,41 @@ struct HomeView: View {
                         ForEach(plans) { CardPlanRow(plan: $0) }
                     }
 
-                    let bills = store.budgets.filter { $0.isFixed && ($0.monthlyAmount > 0 || engine.spent(in: $0.id) > 0) }
+                    let bills = plan.buckets.filter { $0.category.isFixed && ($0.assigned > 0 || $0.spent > 0) }
                     if !bills.isEmpty {
                         SectionHeader(title: "Bills", trailing: "\(engine.billsRemaining.currency()) left to pay")
                         Card {
-                            ForEach(bills) { CategoryRow(category: $0, spent: engine.spent(in: $0.id)) }
+                            ForEach(bills) { CategoryRow(funding: $0) }
                         }
                     }
 
-                    let flexible = store.budgets.filter { !$0.isFixed && ($0.monthlyAmount > 0 || engine.spent(in: $0.id) > 0) }
+                    let flexible = plan.buckets.filter { !$0.category.isFixed && ($0.assigned > 0 || $0.spent > 0) }
                     SectionHeader(title: "Spending", trailing: Date.now.formatted(.dateTime.month(.wide)))
                     Card {
-                        ForEach(flexible) { CategoryRow(category: $0, spent: engine.spent(in: $0.id)) }
+                        ForEach(flexible) { CategoryRow(funding: $0) }
                         if flexible.isEmpty {
                             Text("No spending yet this month.").foregroundStyle(.secondary)
                         }
                     }
+
+                    let empty = plan.buckets.filter { $0.assigned == 0 && $0.spent == 0 }
+                    HStack {
+                        Button("New bucket", systemImage: "plus.circle.fill") { addingBucket = true }
+                        Spacer()
+                        if !empty.isEmpty {
+                            Menu {
+                                Section("Assign money to") {
+                                    ForEach(empty) { bucket in
+                                        Button(bucket.category.name, systemImage: bucket.category.symbol) { path.append(bucket.category) }
+                                    }
+                                }
+                            } label: {
+                                Text("\(empty.count) empty buckets").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 4)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
@@ -41,7 +70,9 @@ struct HomeView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Budget")
             .navigationDestination(for: BudgetCategory.self) { CategoryDetailView(categoryId: $0.id) }
+            .navigationDestination(for: Route.self) { _ in IncomeView() }
             .refreshable { await store.refresh() }
+            .sheet(isPresented: $addingBucket) { NewBucketSheet() }
             .toolbar {
                 if store.isDemo {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -71,12 +102,20 @@ private struct SafeToSpendCard: View {
                  : "You're over by \((-safe.amount).currency()). Ask Runway for a plan.")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.9))
+            if safe.expectedIncome > 0 {
+                Label(safe.inHand >= 0
+                      ? "Counts \(safe.expectedIncome.currency()) of pay that hasn't arrived yet. \(safe.inHand.currency()) is money you already have."
+                      : "Counts \(safe.expectedIncome.currency()) of pay that hasn't arrived yet. Until it does, you're \((-safe.inHand).currency()) short.",
+                      systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.85))
+            }
 
             if expanded {
                 VStack(spacing: 8) {
                     BreakdownRow(label: "Cash in checking", value: safe.cash)
                     if safe.expectedIncome > 0 {
-                        BreakdownRow(label: "Paychecks before month end", value: safe.expectedIncome)
+                        BreakdownRow(label: "Paychecks still coming (projected)", value: safe.expectedIncome)
                     }
                     BreakdownRow(label: "Owed on credit cards", value: -safe.creditCardBalances)
                     BreakdownRow(label: "Bills still to pay", value: -safe.billsRemaining)
@@ -181,6 +220,16 @@ private struct CardPlanRow: View {
                 Label("Statement paid. Nice.", systemImage: "checkmark.circle.fill")
                     .font(.subheadline).foregroundStyle(Theme.positive)
             }
+            switch plan.funding {
+            case .paycheck(let date):
+                Label("Covered once your \(date.shortDay) paycheck lands", systemImage: "clock")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .short(let amount):
+                Label("\(amount.currency(cents: true)) short, even counting paychecks before the due date", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(Theme.negative)
+            case .cashOnHand, .nothingDue:
+                EmptyView()
+            }
             if plan.newSpending > 0 {
                 Text("\(plan.newSpending.currency(cents: true)) in new charges goes on the next statement.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -190,8 +239,10 @@ private struct CardPlanRow: View {
 }
 
 struct CategoryRow: View {
-    var category: BudgetCategory
-    var spent: Double
+    var funding: BudgetEngine.BucketFunding
+
+    private var category: BudgetCategory { funding.category }
+    private var spent: Double { funding.spent }
 
     var body: some View {
         NavigationLink(value: category) {
@@ -205,6 +256,10 @@ struct CategoryRow: View {
                             .foregroundStyle(spent > category.monthlyAmount && category.monthlyAmount > 0 ? Theme.negative : .secondary)
                     }
                     BudgetBar(spent: spent, budget: category.monthlyAmount)
+                    if funding.fromExpected > 0.5, let date = funding.waitingOn {
+                        Label("\(funding.fromExpected.currency()) waits on \(date.shortDay) pay", systemImage: "clock")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             .contentShape(Rectangle())
@@ -216,5 +271,132 @@ struct CategoryRow: View {
         guard category.monthlyAmount > 0 else { return "\(spent.currency()) spent" }
         let left = category.monthlyAmount - spent
         return left >= 0 ? "\(left.currency()) left" : "\((-left).currency()) over"
+    }
+}
+
+/// This month's income (arrived vs. projected) and how much is left to assign.
+private struct PlanCard: View {
+    var plan: BudgetEngine.Plan
+    var unreviewed: Int
+
+    var body: some View {
+        Card {
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(Date.now.formatted(.dateTime.month(.wide))) income").font(.headline)
+                Spacer()
+                Text(plan.income.currency()).font(.headline).monospacedDigit()
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            IncomeBar(arrived: plan.arrived, expected: plan.expected)
+            HStack(spacing: 14) {
+                Legend(color: Theme.positive, text: "\(plan.arrived.currency()) arrived")
+                Legend(color: Theme.positive.opacity(0.35), text: "\(plan.expected.currency()) expected")
+            }
+            Divider()
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(plan.leftToAssign >= 0 ? "Left to assign" : "Over-assigned")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(abs(plan.leftToAssign).currency())
+                        .font(.title3.weight(.bold)).monospacedDigit()
+                        .foregroundStyle(plan.leftToAssign >= 0 ? Color.primary : Theme.negative)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Assigned").font(.caption).foregroundStyle(.secondary)
+                    Text((plan.assigned + plan.savingsGoal).currency()).font(.title3.weight(.semibold)).monospacedDigit()
+                }
+            }
+            if plan.assignedFromExpected > 0.5 {
+                Text("\(plan.assignedFromExpected.currency()) of what you've assigned is waiting on pay that hasn't arrived yet.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if unreviewed > 0 {
+                Label(unreviewed == 1 ? "Review 1 detected income source" : "Review \(unreviewed) detected income sources",
+                      systemImage: "sparkles")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+/// Solid for income that's in the account, faded for income that's projected.
+struct IncomeBar: View {
+    var arrived: Double
+    var expected: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            let total = max(1, arrived + expected)
+            HStack(spacing: 2) {
+                if arrived > 0 {
+                    Capsule().fill(Theme.positive).frame(width: max(6, geo.size.width * arrived / total))
+                }
+                if expected > 0 {
+                    Capsule().fill(Theme.positive.opacity(0.35))
+                }
+                if arrived + expected <= 0 {
+                    Capsule().fill(Color(.tertiarySystemFill))
+                }
+            }
+        }
+        .frame(height: 8)
+    }
+}
+
+private struct Legend: View {
+    var color: Color
+    var text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(text).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }
+    }
+}
+
+private struct NewBucketSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var amountText = ""
+    @State private var isBill = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Name, like Gifts or Car repairs", text: $name)
+                HStack {
+                    Text("Assign each month")
+                    Spacer()
+                    TextField("$0", text: $amountText)
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 110)
+                }
+                Section {
+                    Toggle("It's a bill", isOn: $isBill)
+                } footer: {
+                    Text("Unpaid bills are set aside from safe to spend until they're paid. To fill this bucket, long-press a transaction in Activity and move it here.")
+                }
+            }
+            .navigationTitle("New bucket")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        let amount = Double(amountText.replacingOccurrences(of: ",", with: "")) ?? 0
+                        store.addBucket(.custom(name: name.trimmingCharacters(in: .whitespaces), isFixed: isBill, amount: max(0, amount)))
+                        dismiss()
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

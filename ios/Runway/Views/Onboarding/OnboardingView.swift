@@ -2,9 +2,13 @@ import SwiftUI
 
 struct OnboardingView: View {
     @Environment(AppStore.self) private var store
-    @State private var step: Step = .welcome
+    @State private var step: Step = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-step"), i + 1 < args.count else { return .welcome }
+        return Step(rawValue: args[i + 1]) ?? .welcome
+    }()
 
-    enum Step { case welcome, connect, building, review }
+    enum Step: String { case welcome, connect, building, review }
 
     var body: some View {
         ZStack {

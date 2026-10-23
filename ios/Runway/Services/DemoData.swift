@@ -129,3 +129,29 @@ struct SeededGenerator: RandomNumberGenerator {
         return z ^ (z >> 31)
     }
 }
+
+extension DemoData {
+    /// A canned conversation for screenshots of the Ask tab. Real answers come
+    /// from Claude through the backend.
+    static let sampleChat: [ChatMessage] = [
+        ChatMessage(role: .user, content: "How much do I have to play with for the rest of the month?"),
+        ChatMessage(role: .assistant, content: """
+        You have about **$1,050** to spend through the 31st, roughly $90 a day.
+
+        - $3,236 in checking + $2,150 paycheck next Friday
+        - minus $2,129 owed across your Sapphire and Discover cards
+        - minus $2,210 in bills you haven't paid yet (rent and utilities hit on the 1st)
+
+        Dining is already at 80% of its budget, so that's the one to watch this week.
+        """),
+        ChatMessage(role: .user, content: "How should I pay my cards so I don't carry a balance?"),
+        ChatMessage(role: .assistant, content: """
+        Pay these two and you're interest-free:
+
+        - **Sapphire: $1,184.22 by the 1st** (24.99% APR, due first)
+        - **Discover: $412.80 by the 11th**
+
+        Your checking covers both today. The $458 of new Sapphire charges goes on next month's statement, and it's already set aside in your safe-to-spend number.
+        """),
+    ]
+}

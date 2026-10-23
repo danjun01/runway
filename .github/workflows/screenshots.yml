@@ -1,0 +1,66 @@
+name: Screenshots
+
+# Runs the app in the iOS Simulator with demo data and commits screenshots of
+# each screen to the `screenshots` branch.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [ios/**, .github/workflows/screenshots.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen && xcodegen generate
+      - name: Boot a simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          ios = [d for runtime, ds in devices.items() if "iOS" in runtime for d in ds if d["name"].startswith("iPhone") and "Pro" in d["name"] and "Max" not in d["name"]]
+          print(ios[-1]["udid"])')
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID"
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
+      - name: Build
+        run: |
+          xcodebuild build -project Runway.xcodeproj -scheme Runway \
+            -destination "id=$SIM_UDID" -derivedDataPath build CODE_SIGNING_ALLOWED=NO -quiet
+          xcrun simctl install "$SIM_UDID" build/Build/Products/Debug-iphonesimulator/Runway.app
+      - name: Capture
+        run: |
+          mkdir -p shots
+          shoot() {
+            name=$1; shift
+            xcrun simctl terminate "$SIM_UDID" com.danjun01.runway 2>/dev/null || true
+            xcrun simctl launch "$SIM_UDID" com.danjun01.runway -uiPreview "$@"
+            sleep 6
+            xcrun simctl io "$SIM_UDID" screenshot "shots/$name.png"
+          }
+          xcrun simctl ui "$SIM_UDID" appearance light
+          shoot 01-welcome -onboarding -step welcome
+          shoot 02-connect -onboarding -step connect
+          shoot 03-plan -onboarding -step review
+          shoot 04-budget
+          shoot 05-activity -tab activity
+          shoot 06-ask -tab ask
+          shoot 07-accounts -tab accounts
+          xcrun simctl ui "$SIM_UDID" appearance dark
+          shoot 08-budget-dark
+          shoot 09-ask-dark -tab ask
+      - name: Commit to the screenshots branch
+        run: |
+          cd shots
+          git init -q -b screenshots
+          git add .
+          git -c user.name="github-actions" -c user.email="github-actions@users.noreply.github.com" commit -q -m "Screenshots for ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" screenshots

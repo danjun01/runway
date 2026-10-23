@@ -24,8 +24,25 @@ final class AppStore {
     private let api = APIClient()
     private let plaid = PlaidLinkPresenter()
 
+    /// Launched with `-uiPreview` (used by the screenshot job): demo data,
+    /// nothing read from or written to disk. `-tab ask|activity|accounts`
+    /// opens a tab and `-onboarding` shows onboarding instead.
+    let isPreview: Bool
+
     init() {
-        load()
+        let args = ProcessInfo.processInfo.arguments
+        isPreview = args.contains("-uiPreview")
+        guard isPreview else {
+            load()
+            return
+        }
+        startDemo()
+        budgets = engine.suggestedBudgets()
+        hasOnboarded = !args.contains("-onboarding")
+        if let i = args.firstIndex(of: "-tab"), i + 1 < args.count {
+            selectedTab = ["activity": .activity, "ask": .ask, "accounts": .accounts][args[i + 1]] ?? .home
+        }
+        if selectedTab == .ask { chat = DemoData.sampleChat }
     }
 
     var engine: BudgetEngine {
@@ -172,6 +189,7 @@ final class AppStore {
     }
 
     func save() {
+        guard !isPreview else { return }
         let state = Persisted(snapshot: isDemo ? nil : snapshot, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
                               hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
         do {

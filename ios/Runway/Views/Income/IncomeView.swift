@@ -12,8 +12,8 @@ struct IncomeView: View {
         let engine = store.engine
         let plan = engine.plan
         let sources = engine.incomeSources
-        let counted = sources.filter(\.counts)
-        let suggested = sources.filter { $0.status == .suggested }
+        let counted = engine.countedIncome
+        let suggested = sources.filter { ($0.status == .detected || $0.status == .suggested) && !counted.contains($0) }
         let ignored = sources.filter { $0.status == .ignored }
 
         List {
@@ -66,7 +66,7 @@ struct IncomeView: View {
                 } header: {
                     Text("Is this income?")
                 } footer: {
-                    Text("Regular money coming in that might be a transfer. It isn't counted until you confirm it.")
+                    Text("Regular money coming in that looks like pay or might be a transfer. None of it counts toward your budget or Safe to spend until you confirm it.")
                 }
             }
 

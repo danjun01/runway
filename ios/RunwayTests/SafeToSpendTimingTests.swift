@@ -130,7 +130,14 @@ final class SafeToSpendTimingTests: XCTestCase {
         let card = CreditCard(accountId: "visa", lastStatementBalance: 900, lastStatementDate: "2026-10-01",
                               nextPaymentDueDate: "2026-10-25", minimumPayment: 25, lastPaymentAmount: nil,
                               lastPaymentDate: nil, isOverdue: false, purchaseApr: 24.9)
-        let e = engine(snapshot(accounts: accounts, cards: [card], recurring: [paycheck(next: "2026-10-30")]))
+        let snap = snapshot(accounts: accounts, cards: [card], recurring: [paycheck(next: "2026-10-30")])
+        let pay = engine(snap).incomeSources.map { source in
+            var source = source
+            source.status = .confirmed
+            return source
+        }
+        var e = engine(snap)
+        e.savedIncome = pay
         let safe = e.safeToSpend
         XCTAssertEqual(safe.amount, 1100) // 1,000 + 1,000 paycheck - 900 card
         XCTAssertEqual(safe.lowPoint.balance, 100)

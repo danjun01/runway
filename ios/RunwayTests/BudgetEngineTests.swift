@@ -24,6 +24,25 @@ final class BudgetEngineTests: XCTestCase {
         ], transactions: transactions, creditCards: cards, recurring: recurring)
     }
 
+    /// Detected income as the user would have it after tapping Confirm.
+    private func confirmed(_ streams: [RecurringStream]) -> [IncomeSource] {
+        BudgetEngine(snapshot: snapshot(recurring: streams), budgets: [], monthlySavingsGoal: 0, today: today)
+            .incomeSources.map { source in
+                var source = source
+                source.status = .confirmed
+                return source
+            }
+    }
+
+    func testDetectedPayDoesntCountUntilConfirmed() {
+        let engine = BudgetEngine(snapshot: snapshot(transactions: paidTwiceInOctober, recurring: [payroll]),
+                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today)
+        XCTAssertEqual(engine.incomeSources.map(\.status), [.detected])
+        XCTAssertEqual(engine.unreviewedIncome.count, 1)
+        XCTAssertEqual(engine.safeToSpend.expectedIncome, 0)
+        XCTAssertEqual(engine.plan.expected, 0)
+    }
+
     func testCardPaymentsAndTransfersAreNotSpending() {
         XCTAssertNil(BudgetCategory.categoryId(for: txn("2026-10-01", 500, "LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT")))
         XCTAssertNil(BudgetCategory.categoryId(for: txn("2026-10-01", 500, "TRANSFER_OUT")))
@@ -51,7 +70,7 @@ final class BudgetEngineTests: XCTestCase {
                                   averageAmount: 1000, lastAmount: 1000, frequency: "BIWEEKLY", lastDate: "2026-10-16",
                                   predictedNextDate: "2026-10-30", category: "INCOME", isActive: true)
         let engine = BudgetEngine(snapshot: snapshot(recurring: [pay]), budgets: BudgetCategory.defaults,
-                                  monthlySavingsGoal: 0, today: today)
+                                  monthlySavingsGoal: 0, today: today, savedIncome: confirmed([pay]))
         XCTAssertEqual(engine.safeToSpend.incomeEvents.map(\.date), ["2026-10-30"])
         XCTAssertEqual(engine.safeToSpend.expectedIncome, 1000)
     }
@@ -106,7 +125,8 @@ final class BudgetEngineTests: XCTestCase {
 
     func testPaychecksAreArrivedOrExpected() {
         let engine = BudgetEngine(snapshot: snapshot(transactions: paidTwiceInOctober, recurring: [payroll]),
-                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today)
+                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today,
+                                  savedIncome: confirmed([payroll]))
         let checks = engine.paychecksThisMonth()
         XCTAssertEqual(checks.map(\.state), [.arrived, .arrived, .expected])
         XCTAssertEqual(checks.map { Day.string($0.date) }, ["2026-10-02", "2026-10-16", "2026-10-30"])
@@ -119,7 +139,8 @@ final class BudgetEngineTests: XCTestCase {
     func testMissingPaycheckIsFlaggedNotCounted() {
         // Only the Oct 2 deposit landed; Oct 16 is four days late by Oct 20.
         let engine = BudgetEngine(snapshot: snapshot(transactions: [paidTwiceInOctober[0]], recurring: [payroll]),
-                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today)
+                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today,
+                                  savedIncome: confirmed([payroll]))
         XCTAssertEqual(engine.paychecksThisMonth().map(\.state), [.arrived, .missed, .expected])
         XCTAssertEqual(engine.plan.income, 2000)
     }
@@ -129,7 +150,7 @@ final class BudgetEngineTests: XCTestCase {
         budgets[budgets.firstIndex { $0.id == "dining" }!].monthlyAmount = 800
         budgets[budgets.firstIndex { $0.id == "rent" }!].monthlyAmount = 1500
         let engine = BudgetEngine(snapshot: snapshot(transactions: paidTwiceInOctober, recurring: [payroll]),
-                                  budgets: budgets, monthlySavingsGoal: 100, today: today)
+                                  budgets: budgets, monthlySavingsGoal: 100, today: today, savedIncome: confirmed([payroll]))
         let plan = engine.plan
         let rent = try XCTUnwrap(plan.buckets.first { $0.id == "rent" })
         let dining = try XCTUnwrap(plan.buckets.first { $0.id == "dining" })
@@ -190,7 +211,8 @@ final class BudgetEngineTests: XCTestCase {
                               nextPaymentDueDate: "2026-10-31", minimumPayment: 25, lastPaymentAmount: nil,
                               lastPaymentDate: nil, isOverdue: false, purchaseApr: 24.9)
         let engine = BudgetEngine(snapshot: snapshot(cards: [card], recurring: [payroll], cardBalance: 2600),
-                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today)
+                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today,
+                                  savedIncome: confirmed([payroll]))
         let plan = try XCTUnwrap(engine.cardPlans.first)
         XCTAssertEqual(plan.funding, .paycheck(Day.parse("2026-10-30")))
 

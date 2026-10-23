@@ -18,7 +18,9 @@ extension BudgetEngine {
         return result
     }
 
-    var countedIncome: [IncomeSource] { incomeSources.filter(\.counts) }
+    var countedIncome: [IncomeSource] {
+        incomeSources.filter { $0.counts || countsDetectedIncome && $0.status == .detected }
+    }
 
     /// Detected but not yet confirmed or dismissed by the user.
     var unreviewedIncome: [IncomeSource] {

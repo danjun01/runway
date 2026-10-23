@@ -13,6 +13,8 @@ struct BudgetEngine {
     var savedIncome: [IncomeSource] = []
     /// Merchant key -> bucket id, from "move to bucket".
     var bucketRules: [String: String] = [:]
+    /// Count detected income the user hasn't confirmed. Only demo data does this.
+    var countsDetectedIncome = false
 
     var cal: Calendar { Day.calendar }
     var monthStart: Date { Day.startOfMonth(today) }

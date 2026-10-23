@@ -13,7 +13,8 @@ struct HomeView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    SafeToSpendCard(safe: engine.safeToSpend, engine: engine)
+                    SafeToSpendCard(safe: engine.safeToSpend, engine: engine,
+                                    unconfirmedPay: store.isDemo ? 0 : engine.unreviewedIncome.filter { $0.status == .detected }.count)
 
                     QuickAsk()
 
@@ -106,6 +107,8 @@ struct HomeView: View {
 private struct SafeToSpendCard: View {
     var safe: BudgetEngine.SafeToSpend
     var engine: BudgetEngine
+    /// Detected paychecks waiting for confirmation; they don't count yet.
+    var unconfirmedPay = 0
     @State private var expanded = false
     @State private var showAfford = false
 
@@ -118,6 +121,8 @@ private struct SafeToSpendCard: View {
                 .contentTransition(.numericText())
             Text(safe.amount > 0
                  ? "\(safe.perDay.currency()) a day for the next \(safe.daysLeft) days"
+                 : unconfirmedPay > 0
+                 ? "Your paychecks aren't counted yet. Review them below."
                  : "You're over by \((-safe.amount).currency()). Ask Runway for a plan.")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.9))
@@ -126,6 +131,15 @@ private struct SafeToSpendCard: View {
                       ? "Counts \(safe.expectedIncome.currency()) of pay that hasn't arrived yet. \(safe.inHand.currency()) is money you already have."
                       : "Counts \(safe.expectedIncome.currency()) of pay that hasn't arrived yet. Until it does, you're \((-safe.inHand).currency()) short.",
                       systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+
+            if unconfirmedPay > 0 {
+                Label(unconfirmedPay == 1
+                      ? "Doesn't count a paycheck Runway found until you confirm it below."
+                      : "Doesn't count \(unconfirmedPay) paychecks Runway found until you confirm them below.",
+                      systemImage: "questionmark.circle")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.85))
             }

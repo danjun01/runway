@@ -54,7 +54,7 @@ final class AppStore {
 
     var engine: BudgetEngine {
         BudgetEngine(snapshot: snapshot ?? DemoData.empty, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
-                     savedIncome: incomeSources, bucketRules: bucketRules)
+                     savedIncome: incomeSources, bucketRules: bucketRules, countsDetectedIncome: isDemo)
     }
 
     var institutions: [Institution] { snapshot?.institutions ?? [] }

@@ -44,7 +44,8 @@ enum PayFrequency: String, Codable, CaseIterable, Identifiable, Hashable {
 /// detection keeps improving for the rest.
 struct IncomeSource: Codable, Equatable, Identifiable, Hashable {
     enum Status: String, Codable {
-        /// Found by Runway and looks like income. Counted until the user says otherwise.
+        /// Found by Runway and looks like income. Not counted until the user
+        /// confirms it, so a wrong guess can't inflate the numbers.
         case detected
         /// Regular money in that might not be income (e.g. transfers). Not counted until confirmed.
         case suggested
@@ -66,7 +67,7 @@ struct IncomeSource: Codable, Equatable, Identifiable, Hashable {
     /// ids match deposits exactly even when names drift.
     var streamId: String?
 
-    var counts: Bool { status == .detected || status == .confirmed }
+    var counts: Bool { status == .confirmed }
     var isManual: Bool { id.hasPrefix("manual:") }
     var monthlyEstimate: Double { amount * frequency.perMonth }
 

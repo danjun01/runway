@@ -1,6 +1,6 @@
 import "dotenv/config";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { createLinkToken, exchangePublicToken, plaidEnv, plaidErrorCode, snapshot, unlinkItem } from "./plaid.js";
+import { createLinkToken, exchangePublicToken, plaidEnv, plaidErrorCode, plaidSecret, snapshot, unlinkItem } from "./plaid.js";
 import { streamChat, type ChatRequestBody } from "./chat.js";
 
 const app = express();
@@ -22,7 +22,7 @@ const route =
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    plaid: Boolean(process.env.PLAID_CLIENT_ID && process.env.PLAID_SECRET),
+    plaid: Boolean(process.env.PLAID_CLIENT_ID && plaidSecret),
     plaidEnv,
     claude: Boolean(process.env.ANTHROPIC_API_KEY),
   });

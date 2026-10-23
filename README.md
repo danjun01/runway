@@ -71,10 +71,10 @@ npm run dev              # http://localhost:8787
 | Key | Where to get it |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | [platform.claude.com](https://platform.claude.com/settings/keys) |
-| `PLAID_CLIENT_ID`, `PLAID_SECRET` | [Plaid dashboard](https://dashboard.plaid.com/developers/keys). Sandbox keys are free. |
+| `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX`, `PLAID_SECRET_PRODUCTION` | [Plaid dashboard](https://dashboard.plaid.com/developers/keys). The client ID is the same in both environments; each has its own secret. Sandbox is free. |
 | `ANTHROPIC_MODEL` | Optional. Defaults to `claude-haiku-5-5`, the cheapest model. Set `claude-sonnet-5-5` or `claude-opus-5-5` for more careful planning advice. |
 | `ANTHROPIC_EFFORT` | Optional. `medium` by default; `low` is cheaper and faster, `high` thinks longer. |
-| `PLAID_ENV` | `sandbox` while testing, `production` for your real banks |
+| `PLAID_ENV` | `sandbox` for fake test banks, `production` for your real banks. Change it and restart the backend to switch; banks linked in one environment stay saved and come back when you switch back. |
 
 Check it with `curl localhost:8787/health`.
 

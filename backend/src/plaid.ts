@@ -18,13 +18,18 @@ if (!(plaidEnv in PlaidEnvironments)) {
 }
 const env = plaidEnv;
 
+// Plaid issues a different secret per environment. Keep both in .env as
+// PLAID_SECRET_SANDBOX and PLAID_SECRET_PRODUCTION and switching is just
+// PLAID_ENV; a plain PLAID_SECRET still works for a single environment.
+export const plaidSecret = process.env[`PLAID_SECRET_${plaidEnv.toUpperCase()}`] || process.env.PLAID_SECRET || "";
+
 const plaid = new PlaidApi(
   new Configuration({
     basePath: PlaidEnvironments[env],
     baseOptions: {
       headers: {
         "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID ?? "",
-        "PLAID-SECRET": process.env.PLAID_SECRET ?? "",
+        "PLAID-SECRET": plaidSecret,
       },
     },
   }),

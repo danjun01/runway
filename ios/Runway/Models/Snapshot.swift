@@ -62,9 +62,13 @@ struct Transaction: Codable, Equatable, Identifiable, Hashable {
     var detailedCategory: String?
     var pending: Bool
     var logoUrl: String?
+    /// For a posted transaction, the id it had while pending.
+    var pendingTransactionId: String?
 
-    var displayName: String { merchant ?? name }
+    /// Plaid sends an empty merchant name for some transactions; fall back to the description.
+    var displayName: String { merchant.flatMap { $0.isEmpty ? nil : $0 } ?? name }
     var day: Date { Day.parse(date) }
+    var isCardPayment: Bool { detailedCategory == "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" }
 }
 
 struct CreditCard: Codable, Equatable, Hashable {
@@ -91,12 +95,35 @@ struct RecurringStream: Codable, Equatable, Identifiable, Hashable {
     var lastDate: String
     var predictedNextDate: String?
     var category: String?
+    var detailedCategory: String?
     var isActive: Bool
     /// The deposits or charges Plaid grouped into this stream.
     var transactionIds: [String]?
 
     var isIncome: Bool { direction == "inflow" && (category == nil || category == "INCOME") }
-    var displayName: String { merchant ?? description }
+    /// Plaid sends an empty merchant name for some streams, such as payroll.
+    var merchantName: String? { merchant.flatMap { $0.isEmpty ? nil : $0 } }
+    var displayName: String { merchantName ?? description }
+
+    /// A charge you're committed to (rent, utilities, insurance, loans,
+    /// subscriptions), as opposed to habits like groceries or coffee that come
+    /// out of what's safe to spend. Card payments and transfers are never bills:
+    /// card balances are already reserved in full, and savings has its own goal.
+    var isBill: Bool {
+        guard direction == "outflow" && isActive else { return false }
+        switch category {
+        case "LOAN_PAYMENTS":
+            // Without the detailed category a card payment can't be told apart from a loan.
+            return detailedCategory != nil && detailedCategory != "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"
+        case "RENT_AND_UTILITIES", "GENERAL_SERVICES", "GOVERNMENT_AND_NON_PROFIT":
+            return true
+        case "INCOME", "TRANSFER_IN", "TRANSFER_OUT", "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "TRANSPORTATION", "TRAVEL":
+            return false
+        default:
+            // Subscriptions, gyms and the like: a fixed monthly or yearly charge.
+            return ["MONTHLY", "SEMI_MONTHLY", "ANNUALLY"].contains(frequency)
+        }
+    }
 }
 
 /// A loose, stable name for a merchant or payer, so "ACME CORP PAYROLL PPD
@@ -107,11 +134,11 @@ enum MerchantKey {
     ]
 
     static func of(_ name: String) -> String {
-        let letters = String(name.lowercased().map { (c: Character) -> Character in c.isLetter ? c : " " })
-        let words: [String] = letters
-            .split(separator: " ")
+        // Words only: a token with a digit in it ("8H2K", "ID:1234") is a reference code, not part of the name.
+        let words: [String] = name.lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
             .map { String($0) }
-            .filter { $0.count > 1 && !noise.contains($0) }
+            .filter { $0.count > 1 && !$0.contains(where: \.isNumber) && !noise.contains($0) }
         return words.prefix(3).joined(separator: " ")
     }
 

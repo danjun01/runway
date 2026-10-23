@@ -39,6 +39,9 @@ targets:
         RunwayAPIBaseURL: $(RUNWAY_API_BASE_URL)
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # Background refresh keeps the daily summary notification current.
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.danjun01.runway.refresh]
   RunwayTests:
     type: bundle.unit-test
     platform: iOS

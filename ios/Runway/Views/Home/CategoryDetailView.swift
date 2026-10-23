@@ -118,7 +118,9 @@ struct TransactionRow: View {
                          color: transaction.amount < 0 ? Theme.positive : Theme.accent)
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.displayName).font(.subheadline.weight(.medium)).lineLimit(1)
-                Text(transaction.pending ? "Pending" : (category?.name ?? (transaction.category == "INCOME" ? "Income" : "Transfer")))
+                let label = category?.name ?? (transaction.category == "INCOME" ? "Income"
+                    : transaction.detailedCategory == "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" ? "Card payment" : "Transfer")
+                Text(transaction.pending ? "Pending · \(label)" : label)
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()

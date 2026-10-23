@@ -37,6 +37,27 @@ struct AccountsView: View {
                 }
 
                 Section {
+                    Toggle("Daily summary", isOn: Binding(
+                        get: { store.dailySummaryEnabled },
+                        set: { enabled in Task { await store.setDailySummary(enabled: enabled) } }
+                    ))
+                    if store.dailySummaryEnabled {
+                        DatePicker("Time", selection: Binding(
+                            get: { Calendar.current.date(bySettingHour: store.dailySummaryMinutes / 60,
+                                                         minute: store.dailySummaryMinutes % 60, second: 0, of: .now) ?? .now },
+                            set: { date in
+                                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                                Task { await store.setDailySummaryTime(minutes: (parts.hour ?? 9) * 60 + (parts.minute ?? 0)) }
+                            }
+                        ), displayedComponents: .hourAndMinute)
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("A morning notification with what's safe to spend that day.")
+                }
+
+                Section {
                     HStack {
                         Text("Save each month")
                         Spacer()
@@ -98,6 +119,11 @@ struct AccountsView: View {
                             if account.isCredit, let limit = account.limit {
                                 Text("of \(limit.currency()) limit").font(.caption).foregroundStyle(.secondary)
                             }
+                            // Banks often headline the current balance; Runway uses what's available after pending.
+                            if !account.isCredit, let current = account.currentBalance, let available = account.availableBalance,
+                               abs(current - available) >= 0.01 {
+                                Text("\(current.currency(cents: true)) before pending").font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -108,5 +134,6 @@ struct AccountsView: View {
     private func saveGoal() {
         store.monthlySavingsGoal = Double(savingsText) ?? 0
         store.save()
+        Task { await store.updateDailySummary() }
     }
 }

@@ -44,9 +44,52 @@ struct BudgetEngine {
     var totalBudgeted: Double { budgets.reduce(0) { $0 + $1.monthlyAmount } }
     var totalSpent: Double { spendingThisMonth.reduce(0) { $0 + $1.amount } }
 
-    /// Fixed bills you've budgeted for but haven't paid yet this month.
+    // MARK: Bills
+
+    struct UpcomingBill: Identifiable, Hashable {
+        var streamId: String
+        var name: String
+        var date: Date
+        var amount: Double
+        var accountId: String
+        /// The bucket this bill falls in, if any.
+        var bucketId: String?
+        var id: String { "\(streamId)-\(Day.string(date))" }
+    }
+
+    /// Every bill Plaid expects between today and month end that hasn't been
+    /// charged yet. A bill that's a few days late still counts, as due today.
+    var upcomingBills: [UpcomingBill] {
+        snapshot.recurring.filter(\.isBill).flatMap { stream in
+            remainingOccurrences(of: stream, overdueGraceDays: 7).map { date in
+                UpcomingBill(streamId: stream.id, name: stream.displayName, date: date,
+                             amount: max(stream.averageAmount, stream.lastAmount), accountId: stream.accountId,
+                             bucketId: bucket(ofStream: stream))
+            }
+        }
+        .sorted { ($0.date, $0.name) < ($1.date, $1.name) }
+    }
+
+    private func bucket(ofStream stream: RecurringStream) -> String? {
+        if let id = bucketRules[MerchantKey.of(stream.displayName)], budgets.contains(where: { $0.id == id }) { return id }
+        return BudgetCategory.categoryId(primary: stream.category ?? "OTHER", detailed: stream.detailedCategory)
+    }
+
+    /// What's left in bill buckets where Plaid hasn't found any recurring bill,
+    /// so a bill it can't see (rent paid by check, say) still gets set aside.
+    /// Where Plaid does track bills, its dates and amounts win: the assigned
+    /// amount may be an average of past months and would set aside money for
+    /// bills that aren't coming.
+    var budgetedBillsNotDetected: Double {
+        let tracked = Set(snapshot.recurring.filter(\.isBill).compactMap(bucket(ofStream:)))
+        return budgets.filter { $0.isFixed && !tracked.contains($0.id) }.reduce(0) {
+            $0 + max(0, $1.monthlyAmount - spent(in: $1.id))
+        }
+    }
+
+    /// Bills still to pay this month: detected bills plus assigned ones Plaid isn't tracking.
     var billsRemaining: Double {
-        budgets.filter(\.isFixed).reduce(0) { $0 + max(0, $1.monthlyAmount - spent(in: $1.id)) }
+        upcomingBills.reduce(0) { $0 + $1.amount } + budgetedBillsNotDetected
     }
 
     // MARK: Suggested budget
@@ -86,15 +129,26 @@ struct BudgetEngine {
         /// Paychecks projected to land between now and month end. Not in the account yet.
         var expectedIncome: Double
         var incomeEvents: [IncomeEvent]
+        /// Everything owed on cards, pending charges included.
         var creditCardBalances: Double
+        /// The part of `creditCardBalances` that's still pending.
+        var pendingCardCharges: Double
         var billsRemaining: Double
         var savingsGoal: Double
         var daysLeft: Int
+        var lowPoint: LowPoint
 
         var amount: Double { cash + expectedIncome - creditCardBalances - billsRemaining - savingsGoal }
         var perDay: Double { max(0, amount) / Double(max(1, daysLeft)) }
         /// The same number if no more paychecks came this month: what's backed by money you already have.
         var inHand: Double { amount - expectedIncome }
+
+        /// What you can spend from checking right now without it going negative
+        /// before the paychecks that make up the rest of the month's number.
+        var spendableNow: Double { max(0, min(amount, lowPoint.balance)) }
+
+        /// True when the month adds up but not all of it is available yet.
+        var isTimingLimited: Bool { amount > 0 && lowPoint.balance < amount }
     }
 
     var cashAccounts: [Account] { snapshot.accounts.filter(\.isSpendableCash) }
@@ -106,15 +160,36 @@ struct BudgetEngine {
     /// card ever carries a balance), unpaid bills, and the savings goal.
     var safeToSpend: SafeToSpend {
         let events = upcomingIncome(through: monthEnd)
+        let bills = upcomingBills
+        let plans = cardPlans
+        let cash = spendableCash
         return SafeToSpend(
-            cash: cashAccounts.reduce(0) { $0 + $1.balance },
+            cash: cash,
             expectedIncome: events.reduce(0) { $0 + $1.amount },
             incomeEvents: events,
-            creditCardBalances: creditAccounts.reduce(0) { $0 + max(0, $1.balance) },
-            billsRemaining: billsRemaining,
+            creditCardBalances: plans.reduce(0) { $0 + $1.reserved },
+            pendingCardCharges: plans.reduce(0) { $0 + $1.pendingCharges },
+            billsRemaining: bills.reduce(0) { $0 + $1.amount } + budgetedBillsNotDetected,
             savingsGoal: monthlySavingsGoal,
-            daysLeft: Day.daysLeftInMonth(today)
+            daysLeft: Day.daysLeftInMonth(today),
+            lowPoint: checkingLowPoint(cash: cash, income: events, bills: bills, cards: plans)
         )
+    }
+
+    var spendableCash: Double { cashAccounts.reduce(0) { $0 + spendable($1) } }
+
+    /// Spendable money in a checking-like account. The available balance already
+    /// reflects pending debits; when a bank doesn't report one, take them off the
+    /// current balance.
+    func spendable(_ account: Account) -> Double {
+        if let available = account.availableBalance { return available }
+        return (account.currentBalance ?? 0) - pendingCharges(on: account)
+    }
+
+    private func pendingCharges(on account: Account) -> Double {
+        snapshot.transactions
+            .filter { $0.accountId == account.id && $0.pending && $0.amount > 0 }
+            .reduce(0) { $0 + $1.amount }
     }
 
     /// Paychecks from counted income sources that haven't arrived yet, from
@@ -125,11 +200,129 @@ struct BudgetEngine {
         }
     }
 
+    // MARK: Recurring dates
+
+    /// Dates a recurring stream is still expected to hit, from today through
+    /// month end. Occurrences up to `overdueGraceDays` late count as today. An
+    /// occurrence is skipped when a matching transaction has already shown up:
+    /// Plaid can take a day or more to attach new transactions to a stream, and
+    /// counting it again would double it (a bill already on a card).
+    private func remainingOccurrences(of stream: RecurringStream, overdueGraceDays: Int) -> [Date] {
+        let earliest = cal.date(byAdding: .day, value: -overdueGraceDays, to: startOfToday)!
+        let last = Day.parse(stream.lastDate)
+        let key = MerchantKey.of(stream.displayName)
+        var unattached = snapshot.transactions
+            .filter { t in
+                t.day > last && t.day <= startOfToday && t.accountId == stream.accountId
+                    && (t.amount < 0) == (stream.direction == "inflow") && !key.isEmpty
+                    && MerchantKey.matches(MerchantKey.of(t.displayName), key)
+            }
+            .map(\.day)
+            .sorted()
+
+        var dates: [Date] = []
+        var next = stream.predictedNextDate.map(Day.parse) ?? advance(last, by: stream.frequency)
+        while let date = next, date <= monthEnd {
+            if date > last {
+                // The matching transaction may land a little early or late.
+                let window = cal.date(byAdding: .day, value: -10, to: date)!
+                if let i = unattached.firstIndex(where: { $0 >= window }) {
+                    unattached.remove(at: i)
+                } else if date >= earliest {
+                    dates.append(max(date, startOfToday))
+                }
+            }
+            next = advance(date, by: stream.frequency)
+        }
+        return dates
+    }
+
+    private func advance(_ date: Date, by frequency: String) -> Date? {
+        switch frequency {
+        case "WEEKLY": return cal.date(byAdding: .day, value: 7, to: date)
+        case "BIWEEKLY": return cal.date(byAdding: .day, value: 14, to: date)
+        case "SEMI_MONTHLY": return cal.date(byAdding: .day, value: 15, to: date)
+        case "MONTHLY": return cal.date(byAdding: .month, value: 1, to: date)
+        case "ANNUALLY": return cal.date(byAdding: .year, value: 1, to: date)
+        default: return nil
+        }
+    }
+
+    // MARK: Timing
+
+    struct LowPoint {
+        /// The lowest checking is projected to go this month, before any spending you choose.
+        var balance: Double
+        var date: Date
+        /// What's due that day, e.g. "Sapphire Preferred ••9934 payment".
+        var cause: String?
+        /// The next paycheck after the low point, when the rest of the month's money arrives.
+        var nextPaycheck: Date?
+    }
+
+    /// Walks checking forward day by day through month end using only what's
+    /// already committed: paychecks in; bills paid from checking and card
+    /// statement payments (by their due dates) out. Bills charged to a card are
+    /// paid with next month's statement, so they don't touch checking this month.
+    /// Assigned bills Plaid isn't tracking have no date, so they're left to the
+    /// monthly number rather than guessed at here. Same-day money out is counted
+    /// before money in, since a deposit can land later in the day than a charge.
+    private func checkingLowPoint(cash: Double, income: [IncomeEvent], bills: [UpcomingBill],
+                                  cards: [CardPlan]) -> LowPoint {
+        let creditIds = Set(creditAccounts.map(\.id))
+        var flows: [(date: Date, amount: Double, label: String?)] = []
+        for bill in bills where !creditIds.contains(bill.accountId) {
+            flows.append((bill.date, -bill.amount, bill.name))
+        }
+        // Only cards whose bank reports a due date; a past due date means it's due now.
+        for card in cards where card.payToAvoidInterest > 0 {
+            guard let dueDate = card.dueDate else { continue }
+            let due = max(dueDate, startOfToday)
+            if due <= monthEnd { flows.append((due, -card.payToAvoidInterest, "\(card.account.displayName) payment")) }
+        }
+        for event in income { flows.append((Day.parse(event.date), event.amount, nil)) }
+        flows.sort { ($0.date, $0.amount) < ($1.date, $1.amount) }
+
+        var balance = cash
+        var low = LowPoint(balance: cash, date: startOfToday)
+        for flow in flows {
+            balance += flow.amount
+            if balance < low.balance { low = LowPoint(balance: balance, date: flow.date, cause: flow.label) }
+        }
+        low.nextPaycheck = income.map { Day.parse($0.date) }.first { $0 > low.date }
+        return low
+    }
+
+    // MARK: Can I afford it?
+
+    enum Affordability: Equatable {
+        /// Yes, with this much left for the rest of the month.
+        case yes(left: Double, perDay: Double)
+        /// It fits this month, but checking would go negative if spent before this paycheck.
+        case afterPaycheck(Date, spendableNow: Double)
+        /// It doesn't fit this month; this is how much it's over by.
+        case no(over: Double)
+    }
+
+    func canAfford(_ cost: Double) -> Affordability {
+        let safe = safeToSpend
+        if cost > safe.amount { return .no(over: cost - max(0, safe.amount)) }
+        if cost > safe.spendableNow {
+            guard let payday = safe.lowPoint.nextPaycheck else { return .no(over: cost - safe.spendableNow) }
+            return .afterPaycheck(payday, spendableNow: safe.spendableNow)
+        }
+        let left = safe.amount - cost
+        return .yes(left: left, perDay: left / Double(max(1, safe.daysLeft)))
+    }
+
     // MARK: Credit cards
 
     struct CardPlan: Identifiable, Hashable {
         var account: Account
+        /// Posted balance, as the bank reports it.
         var currentBalance: Double
+        /// Charges still pending that the bank's balance doesn't include yet.
+        var pendingCharges: Double = 0
         var statementBalance: Double?
         /// What's still owed on the last statement. Pay this by the due date to avoid interest.
         var payToAvoidInterest: Double
@@ -142,6 +335,9 @@ struct BudgetEngine {
         /// Where the money to pay `payToAvoidInterest` by the due date comes from.
         var funding: CardFunding = .nothingDue
         var id: String { account.id }
+
+        /// What safe-to-spend sets aside for this card.
+        var reserved: Double { currentBalance + pendingCharges }
     }
 
     enum CardFunding: Hashable {
@@ -169,6 +365,7 @@ struct BudgetEngine {
             return CardPlan(
                 account: account,
                 currentBalance: balance,
+                pendingCharges: pendingNotInBalance(account),
                 statementBalance: card?.lastStatementBalance,
                 payToAvoidInterest: owedOnStatement,
                 dueDate: card?.nextPaymentDueDate.map(Day.parse),
@@ -182,10 +379,25 @@ struct BudgetEngine {
         return fundCards(plans)
     }
 
+    /// Pending charges on a card that its balance doesn't include yet. Most banks
+    /// leave pending charges out of the balance but take them off available
+    /// credit, so when the card reports a limit and available credit, the gap
+    /// between those and the balance shows how much is already counted. Without
+    /// them, assume none of it is.
+    private func pendingNotInBalance(_ account: Account) -> Double {
+        let pending = pendingCharges(on: account)
+        guard pending > 0 else { return 0 }
+        if let limit = account.limit, let available = account.availableBalance, limit > 0 {
+            let uncounted = limit - available - (account.currentBalance ?? 0)
+            return min(pending, max(0, uncounted))
+        }
+        return pending
+    }
+
     /// Pays statements in due-date order, first from cash in checking, then
     /// from paychecks projected to land before each due date.
     private func fundCards(_ plans: [CardPlan]) -> [CardPlan] {
-        var cash = max(0, cashAccounts.reduce(0) { $0 + $1.balance })
+        var cash = max(0, spendableCash)
         var paychecks = expectedPaychecks(through: plans.compactMap(\.dueDate).max() ?? monthEnd)
             .map { (date: $0.date, left: $0.amount) }
         return plans.map { plan in
@@ -242,10 +454,19 @@ struct BudgetEngine {
                 expectedIncomeBeforeMonthEnd: safe.expectedIncome.rounded2,
                 incomeEvents: safe.incomeEvents,
                 minusCreditCardBalances: safe.creditCardBalances.rounded2,
+                ofWhichPendingCardCharges: safe.pendingCardCharges.rounded2,
                 minusUnpaidBillsThisMonth: safe.billsRemaining.rounded2,
                 minusMonthlySavingsGoal: safe.savingsGoal.rounded2,
                 backedByMoneyInHand: safe.inHand.rounded2,
-                method: "spendable cash + projected paychecks before month end - full current balance of every credit card - assigned bills not yet paid this month - savings goal. backedByMoneyInHand is the same without the projected paychecks."
+                upcomingBills: upcomingBills.map {
+                    ChatContext.Bill(name: $0.name, date: Day.string($0.date), amount: $0.amount.rounded2,
+                                     account: accountName[$0.accountId] ?? "")
+                },
+                lowestCheckingBalanceThisMonth: safe.lowPoint.balance.rounded2,
+                lowestCheckingBalanceDate: Day.string(safe.lowPoint.date),
+                lowestCheckingBalanceCause: safe.lowPoint.cause,
+                spendableBeforeNextPaycheck: safe.spendableNow.rounded2,
+                method: "spendable cash (available balance, so pending debits are out) + projected paychecks before month end - full balance of every credit card including pending charges - bills not yet paid this month (recurring bills Plaid detects, plus whatever is left in assigned bill buckets Plaid isn't tracking) - savings goal. backedByMoneyInHand is the same without the projected paychecks. Only spendableBeforeNextPaycheck can be spent now without checking going negative before the next paycheck."
             ),
             income: ChatContext.Income(
                 sources: incomeSources.map { source in
@@ -340,9 +561,19 @@ struct ChatContext: Encodable {
     struct Safe: Encodable {
         var amount, perDay, spendableCash, expectedIncomeBeforeMonthEnd: Double
         var incomeEvents: [BudgetEngine.IncomeEvent]
-        var minusCreditCardBalances, minusUnpaidBillsThisMonth, minusMonthlySavingsGoal: Double
+        var minusCreditCardBalances, ofWhichPendingCardCharges, minusUnpaidBillsThisMonth, minusMonthlySavingsGoal: Double
         var backedByMoneyInHand: Double
+        var upcomingBills: [Bill]
+        var lowestCheckingBalanceThisMonth: Double
+        var lowestCheckingBalanceDate: String
+        var lowestCheckingBalanceCause: String?
+        var spendableBeforeNextPaycheck: Double
         var method: String
+    }
+    struct Bill: Encodable {
+        var name, date: String
+        var amount: Double
+        var account: String
     }
     struct Income: Encodable {
         var sources: [IncomeLine]

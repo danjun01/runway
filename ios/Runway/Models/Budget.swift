@@ -38,8 +38,12 @@ extension BudgetCategory {
     /// Which envelope a transaction belongs to, or nil when it isn't spending
     /// (income, transfers, and credit card payments, which would double count).
     static func categoryId(for t: Transaction) -> String? {
-        let detailed = t.detailedCategory ?? ""
-        switch t.category {
+        categoryId(primary: t.category, detailed: t.detailedCategory)
+    }
+
+    static func categoryId(primary: String, detailed: String?) -> String? {
+        let detailed = detailed ?? ""
+        switch primary {
         case "INCOME", "TRANSFER_IN", "TRANSFER_OUT":
             return nil
         case "LOAN_PAYMENTS":
@@ -73,7 +77,10 @@ extension BudgetCategory {
     static func bucketId(for t: Transaction, rules: [String: String], budgets: [BudgetCategory]) -> String? {
         if t.category == "INCOME" || t.detailedCategory == "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" { return nil }
         if let id = rules[MerchantKey.of(t.displayName)], budgets.contains(where: { $0.id == id }) { return id }
-        return categoryId(for: t)
+        guard let id = categoryId(for: t) else { return nil }
+        // A deleted bucket's spending lands in "Everything else" rather than disappearing.
+        if budgets.contains(where: { $0.id == id }) || !budgets.contains(where: { $0.id == "other" }) { return id }
+        return "other"
     }
 }
 

@@ -1,6 +1,6 @@
 import "dotenv/config";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { createLinkToken, exchangePublicToken, plaidErrorCode, snapshot, unlinkItem } from "./plaid.js";
+import { createLinkToken, exchangePublicToken, plaidEnv, plaidErrorCode, snapshot, unlinkItem } from "./plaid.js";
 import { streamChat, type ChatRequestBody } from "./chat.js";
 
 const app = express();
@@ -23,6 +23,7 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     plaid: Boolean(process.env.PLAID_CLIENT_ID && process.env.PLAID_SECRET),
+    plaidEnv,
     claude: Boolean(process.env.ANTHROPIC_API_KEY),
   });
 });
@@ -77,4 +78,4 @@ app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: 
 });
 
 const port = Number(process.env.PORT ?? 8787);
-app.listen(port, "0.0.0.0", () => console.log(`Runway backend on http://localhost:${port}`));
+app.listen(port, "0.0.0.0", () => console.log(`Runway backend on http://localhost:${port} (Plaid ${plaidEnv})`));

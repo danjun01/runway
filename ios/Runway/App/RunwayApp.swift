@@ -10,6 +10,9 @@ struct RunwayApp: App {
                 .environment(store)
                 .tint(Theme.accent)
         }
+        .backgroundTask(.appRefresh(DailySummary.refreshTaskId)) {
+            await store.refreshInBackground()
+        }
     }
 }
 

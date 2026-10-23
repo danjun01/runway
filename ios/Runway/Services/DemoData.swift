@@ -96,7 +96,28 @@ enum DemoData {
                   isOverdue: false, purchaseApr: 27.24),
         ]
 
+        // A monthly stream on day `dom` of the month, matching the charges generated above.
+        func monthly(_ id: String, _ name: String, dom: Int, _ amount: Double, _ primary: String, _ detailed: String,
+                     account: String) -> RecurringStream {
+            var last = cal.date(byAdding: .day, value: dom - 1, to: Day.startOfMonth(today))!
+            if last > cal.startOfDay(for: today) { last = cal.date(byAdding: .month, value: -1, to: last)! }
+            return .init(id: id, accountId: account, direction: "outflow", description: name.uppercased(), merchant: name,
+                         averageAmount: amount, lastAmount: amount, frequency: "MONTHLY", lastDate: Day.string(last),
+                         predictedNextDate: Day.string(cal.date(byAdding: .month, value: 1, to: last)!),
+                         category: primary, detailedCategory: detailed, isActive: true)
+        }
+
         let recurring: [RecurringStream] = [
+            monthly("energy", "Austin Energy", dom: 5, 140, "RENT_AND_UTILITIES", "RENT_AND_UTILITIES_GAS_AND_ELECTRICITY", account: "sapphire"),
+            monthly("spectrum", "Spectrum", dom: 8, 70, "RENT_AND_UTILITIES", "RENT_AND_UTILITIES_INTERNET_AND_CABLE", account: "sapphire"),
+            monthly("netflix", "Netflix", dom: 12, 15.49, "ENTERTAINMENT", "ENTERTAINMENT_TV_AND_MOVIES", account: "sapphire"),
+            monthly("spotify", "Spotify", dom: 14, 11.99, "ENTERTAINMENT", "ENTERTAINMENT_MUSIC_AND_AUDIO", account: "sapphire"),
+            monthly("geico", "Geico", dom: 15, 128, "GENERAL_SERVICES", "GENERAL_SERVICES_INSURANCE", account: "discover"),
+            monthly("tmobile", "T-Mobile", dom: 20, 65, "RENT_AND_UTILITIES", "RENT_AND_UTILITIES_TELEPHONE", account: "discover"),
+            monthly("equinox", "Equinox", dom: 3, 45, "PERSONAL_CARE", "PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS", account: "discover"),
+            // Not bills: card payments and savings transfers are reserved other ways.
+            monthly("cardpay", "Chase Card Payment", dom: 22, 1380, "LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", account: "chk"),
+            monthly("savings", "Transfer to Savings", dom: 24, 300, "TRANSFER_OUT", "TRANSFER_OUT_SAVINGS", account: "chk"),
             .init(id: "pay", accountId: "chk", direction: "inflow", description: "ACME CORP PAYROLL", merchant: "Acme Corp",
                   averageAmount: 2150, lastAmount: 2150, frequency: "BIWEEKLY", lastDate: Day.string(lastPayday),
                   predictedNextDate: Day.string(cal.date(byAdding: .day, value: 14, to: lastPayday)!),
@@ -109,7 +130,7 @@ enum DemoData {
             .init(id: "rent", accountId: "chk", direction: "outflow", description: "PARKVIEW APTS", merchant: "Parkview Apartments",
                   averageAmount: 1650, lastAmount: 1650, frequency: "MONTHLY", lastDate: Day.string(Day.startOfMonth(today)),
                   predictedNextDate: Day.string(cal.date(byAdding: .month, value: 1, to: Day.startOfMonth(today))!),
-                  category: "RENT_AND_UTILITIES", isActive: true),
+                  category: "RENT_AND_UTILITIES", detailedCategory: "RENT_AND_UTILITIES_RENT", isActive: true),
         ]
 
         return Snapshot(

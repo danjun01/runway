@@ -13,7 +13,7 @@ struct HomeView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    SafeToSpendCard(safe: engine.safeToSpend)
+                    SafeToSpendCard(safe: engine.safeToSpend, engine: engine)
 
                     QuickAsk()
 
@@ -22,10 +22,23 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
 
+                    let upcoming = engine.upcomingBills
+                    if !upcoming.isEmpty {
+                        SectionHeader(title: "Coming up before month end",
+                                      trailing: "\(upcoming.reduce(0) { $0 + $1.amount }.currency())")
+                        Card {
+                            let cardIds = Set(engine.creditAccounts.map(\.id))
+                            ForEach(upcoming) { bill in UpcomingBillRow(bill: bill, onCard: cardIds.contains(bill.accountId)) }
+                        }
+                    }
+
                     let plans = engine.cardPlans
                     if !plans.isEmpty {
                         SectionHeader(title: "Credit cards", trailing: "Pay to avoid interest")
                         ForEach(plans) { CardPlanRow(plan: $0) }
+                        Text("Card balances are already set aside in Safe to spend, and card purchases count in their buckets like debit. There's nothing to assign to a card; just pay what's shown.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(.horizontal, 4)
                     }
 
                     let bills = plan.buckets.filter { $0.category.isFixed && ($0.assigned > 0 || $0.spent > 0) }
@@ -63,6 +76,10 @@ struct HomeView: View {
                     }
                     .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 4)
+
+                    if store.snapshot != nil && !store.isDemo {
+                        SyncStatus().padding(.horizontal, 4).padding(.top, 8)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
@@ -88,7 +105,9 @@ struct HomeView: View {
 
 private struct SafeToSpendCard: View {
     var safe: BudgetEngine.SafeToSpend
+    var engine: BudgetEngine
     @State private var expanded = false
+    @State private var showAfford = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -111,29 +130,64 @@ private struct SafeToSpendCard: View {
                     .foregroundStyle(.white.opacity(0.85))
             }
 
+            if let warning = timingWarning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.white)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
             if expanded {
                 VStack(spacing: 8) {
                     BreakdownRow(label: "Cash in checking", value: safe.cash)
                     if safe.expectedIncome > 0 {
                         BreakdownRow(label: "Paychecks still coming (projected)", value: safe.expectedIncome)
                     }
-                    BreakdownRow(label: "Owed on credit cards", value: -safe.creditCardBalances)
+                    BreakdownRow(label: safe.pendingCardCharges > 0
+                                 ? "Owed on cards, incl. \(safe.pendingCardCharges.currency()) pending"
+                                 : "Owed on credit cards",
+                                 value: -safe.creditCardBalances)
                     BreakdownRow(label: "Bills still to pay", value: -safe.billsRemaining)
                     if safe.savingsGoal > 0 {
                         BreakdownRow(label: "Savings goal", value: -safe.savingsGoal)
+                    }
+                    if safe.lowPoint.balance < safe.cash {
+                        Divider().overlay(.white.opacity(0.4))
+                        HStack {
+                            Text("Lowest checking balance, \(safe.lowPoint.date.shortDay)")
+                            Spacer()
+                            Text(safe.lowPoint.balance.currency()).monospacedDigit()
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.white)
                     }
                 }
                 .padding(.top, 4)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            Button {
-                withAnimation(.snappy) { expanded.toggle() }
-            } label: {
-                Label(expanded ? "Hide math" : "How is this calculated?", systemImage: expanded ? "chevron.up" : "chevron.down")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.white)
+            if showAfford {
+                AffordCheck(engine: engine)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
+
+            HStack {
+                Button {
+                    withAnimation(.snappy) { expanded.toggle() }
+                } label: {
+                    Label(expanded ? "Hide math" : "How is this calculated?", systemImage: expanded ? "chevron.up" : "chevron.down")
+                }
+                Spacer()
+                Button {
+                    withAnimation(.snappy) { showAfford.toggle() }
+                } label: {
+                    Text(showAfford ? "Done" : "Can I afford it?")
+                }
+            }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.white)
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -142,6 +196,99 @@ private struct SafeToSpendCard: View {
             in: RoundedRectangle(cornerRadius: 24, style: .continuous)
         )
         .padding(.top, 8)
+    }
+
+    /// Shown when a bill or card payment due before payday would pull checking
+    /// below the month's number, or below zero. (Pay that simply hasn't arrived
+    /// yet is covered by the note above.)
+    private var timingWarning: String? {
+        let low = safe.lowPoint
+        guard let cause = low.cause else { return nil }
+        let when = "on \(low.date.shortDay), when \(cause) is due"
+        if low.balance < 0 {
+            return "Checking is on track to go \((-low.balance).currency()) negative \(when). Move money in before then."
+        }
+        guard safe.isTimingLimited else { return nil }
+        let untilPaycheck = low.nextPaycheck.map { " until your paycheck on \($0.shortDay)" } ?? ""
+        return "Only \(safe.spendableNow.currency()) of this is free\(untilPaycheck). Checking dips to \(low.balance.currency()) \(when)."
+    }
+}
+
+/// "Can I afford $X?", answered on the spot from the same numbers.
+private struct AffordCheck: View {
+    @Environment(AppStore.self) private var store
+    var engine: BudgetEngine
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    private var cost: Double? {
+        Double(text.replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "$", with: "")).flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Text("$").foregroundStyle(.white.opacity(0.8))
+                TextField("", text: $text, prompt: Text("Amount").foregroundStyle(.white.opacity(0.6)))
+                    .keyboardType(.decimalPad)
+                    .focused($focused)
+                    .foregroundStyle(.white)
+            }
+            .font(.title3.weight(.semibold))
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            if let cost {
+                answer(for: cost)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear { focused = true }
+    }
+
+    @ViewBuilder
+    private func answer(for cost: Double) -> some View {
+        switch engine.canAfford(cost) {
+        case .yes(let left, let perDay):
+            Label("Yes. You'd have \(left.currency()) left this month, about \(perDay.currency()) a day.",
+                  systemImage: "checkmark.circle.fill")
+        case .afterPaycheck(let payday, let now):
+            Label("Yes, after your paycheck on \(payday.shortDay). Before then, only \(now.currency()) is free without checking going negative.",
+                  systemImage: "clock.fill")
+        case .no(let over):
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Not this month. It's \(over.currency()) more than you can spend safely.", systemImage: "xmark.circle.fill")
+                Button {
+                    focused = false
+                    store.selectedTab = .ask
+                    Task { await store.ask("I want to spend \(cost.currency(cents: true)). How could I make that work?") }
+                } label: {
+                    Label("Ask Runway for a plan", systemImage: "sparkles").font(.subheadline.weight(.semibold))
+                }
+            }
+        }
+    }
+}
+
+private struct UpcomingBillRow: View {
+    @Environment(AppStore.self) private var store
+    var bill: BudgetEngine.UpcomingBill
+    var onCard: Bool
+
+    var body: some View {
+        let symbol = bill.bucketId.flatMap { id in store.budgets.first { $0.id == id }?.symbol } ?? "doc.text.fill"
+        HStack(spacing: 12) {
+            CategoryIcon(symbol: symbol)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(bill.name).font(.subheadline.weight(.medium)).lineLimit(1)
+                Text(onCard ? "\(bill.date.relativeDay), on a card" : bill.date.relativeDay)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(bill.amount.currency(cents: true)).font(.subheadline).monospacedDigit()
+        }
     }
 }
 
@@ -232,6 +379,10 @@ private struct CardPlanRow: View {
             }
             if plan.newSpending > 0 {
                 Text("\(plan.newSpending.currency(cents: true)) in new charges goes on the next statement.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if plan.pendingCharges > 0 {
+                Text("Plus \(plan.pendingCharges.currency(cents: true)) pending, already set aside.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

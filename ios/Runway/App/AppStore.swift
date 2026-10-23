@@ -15,6 +15,9 @@ final class AppStore {
     var incomeSources: [IncomeSource] = []
     /// Merchant key -> bucket id, set by moving a transaction to a bucket.
     var bucketRules: [String: String] = [:]
+    var dailySummaryEnabled = false
+    /// Minutes after midnight for the daily summary.
+    var dailySummaryMinutes = 9 * 60
     var hasOnboarded = false
     var isDemo = false
     var chat: [ChatMessage] = []
@@ -89,9 +92,18 @@ final class AppStore {
         do {
             snapshot = try await api.snapshot()
             save()
+            await updateDailySummary()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Background app refresh: pull new data quietly so tomorrow's summary is current.
+    func refreshInBackground() async {
+        guard hasOnboarded, !isDemo, let fresh = try? await api.snapshot() else { return }
+        snapshot = fresh
+        save()
+        await updateDailySummary()
     }
 
     /// Right after linking, Plaid can take a little while to pull history.
@@ -189,6 +201,37 @@ final class AppStore {
         save()
     }
 
+    // MARK: Daily summary
+
+    /// Turns the morning notification on (asking for permission) or off.
+    func setDailySummary(enabled: Bool) async {
+        if enabled {
+            guard await DailySummary.requestPermission() else {
+                dailySummaryEnabled = false
+                errorMessage = "Notifications are off for Runway. Turn them on in Settings to get a daily summary."
+                return
+            }
+        }
+        dailySummaryEnabled = enabled
+        save()
+        await updateDailySummary()
+    }
+
+    func setDailySummaryTime(minutes: Int) async {
+        dailySummaryMinutes = minutes
+        save()
+        await updateDailySummary()
+    }
+
+    /// Reschedules the next summary with the latest numbers.
+    func updateDailySummary() async {
+        guard dailySummaryEnabled, hasOnboarded, !isPreview else {
+            DailySummary.cancel()
+            return
+        }
+        await DailySummary.schedule(engine: engine, minutes: dailySummaryMinutes)
+    }
+
     func finishOnboarding() {
         hasOnboarded = true
         save()
@@ -200,6 +243,8 @@ final class AppStore {
         monthlySavingsGoal = 0
         incomeSources = []
         bucketRules = [:]
+        dailySummaryEnabled = false
+        DailySummary.cancel()
         hasOnboarded = false
         isDemo = false
         chat = []
@@ -247,6 +292,8 @@ final class AppStore {
         // Optional so state saved by earlier versions still loads.
         var incomeSources: [IncomeSource]?
         var bucketRules: [String: String]?
+        var dailySummaryEnabled: Bool?
+        var dailySummaryMinutes: Int?
         var hasOnboarded: Bool
         var isDemo: Bool
         var chat: [ChatMessage]
@@ -259,7 +306,8 @@ final class AppStore {
     func save() {
         guard !isPreview else { return }
         let state = Persisted(snapshot: isDemo ? nil : snapshot, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
-                              incomeSources: incomeSources, bucketRules: bucketRules, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
+                              incomeSources: incomeSources, bucketRules: bucketRules,
+                              dailySummaryEnabled: dailySummaryEnabled, dailySummaryMinutes: dailySummaryMinutes, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
         do {
             try FileManager.default.createDirectory(at: URL.applicationSupportDirectory, withIntermediateDirectories: true)
             try JSONEncoder().encode(state).write(to: Self.fileURL, options: [.atomic, .completeFileProtection])
@@ -277,6 +325,8 @@ final class AppStore {
         monthlySavingsGoal = state.monthlySavingsGoal
         incomeSources = state.incomeSources ?? []
         bucketRules = state.bucketRules ?? [:]
+        dailySummaryEnabled = state.dailySummaryEnabled ?? false
+        dailySummaryMinutes = state.dailySummaryMinutes ?? 9 * 60
         hasOnboarded = state.hasOnboarded
         chat = state.chat
     }

@@ -10,7 +10,13 @@ import {
 } from "plaid";
 import { addItem, itemsFor, removeItem, saveItems, type StoredItem } from "./store.js";
 
-const env = process.env.PLAID_ENV ?? "sandbox";
+// The Plaid SDK quietly falls back to production for an unknown name, so a
+// typo would send sandbox keys to production. Fail at startup instead.
+export const plaidEnv = (process.env.PLAID_ENV || "sandbox").trim().toLowerCase();
+if (!(plaidEnv in PlaidEnvironments)) {
+  throw new Error(`PLAID_ENV must be one of ${Object.keys(PlaidEnvironments).join(", ")} (got "${process.env.PLAID_ENV}")`);
+}
+const env = plaidEnv;
 
 const plaid = new PlaidApi(
   new Configuration({
@@ -112,10 +118,16 @@ async function recurringFor(item: StoredItem): Promise<{ inflow: TransactionStre
 
 const HISTORY_DAYS = 180;
 
+// Access tokens are tied to the environment they were created in
+// (access-sandbox-..., access-production-...). After switching PLAID_ENV, items
+// from the other environment would fail with INVALID_ACCESS_TOKEN, so leave
+// them out until PLAID_ENV is switched back.
+const inCurrentEnv = (item: StoredItem) => item.accessToken.startsWith(`access-${plaidEnv}-`);
+
 /** Everything the app needs, normalized to camelCase. Transaction amounts keep
  * Plaid's sign: positive is money leaving the account. */
 export async function snapshot(userId: string) {
-  const items = itemsFor(userId);
+  const items = itemsFor(userId).filter(inCurrentEnv);
   const cutoff = new Date(Date.now() - HISTORY_DAYS * 86_400_000).toISOString().slice(0, 10);
 
   const perItem = await Promise.all(
@@ -167,6 +179,7 @@ export async function snapshot(userId: string) {
         category: t.personal_finance_category?.primary ?? "OTHER",
         detailedCategory: t.personal_finance_category?.detailed ?? null,
         pending: t.pending,
+        pendingTransactionId: t.pending_transaction_id ?? null,
         logoUrl: t.logo_url ?? null,
       })),
     creditCards: perItem.flatMap(({ credit }) =>
@@ -204,6 +217,7 @@ function stream(s: TransactionStream, direction: "inflow" | "outflow") {
     lastDate: s.last_date,
     predictedNextDate: s.predicted_next_date ?? null,
     category: s.personal_finance_category?.primary ?? null,
+    detailedCategory: s.personal_finance_category?.detailed ?? null,
     isActive: s.is_active,
     transactionIds: s.transaction_ids,
   };

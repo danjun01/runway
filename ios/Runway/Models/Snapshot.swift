@@ -107,10 +107,10 @@ enum MerchantKey {
     ]
 
     static func of(_ name: String) -> String {
-        let words = name.lowercased()
-            .map { $0.isLetter ? $0 : " " }
+        let letters = String(name.lowercased().map { (c: Character) -> Character in c.isLetter ? c : " " })
+        let words: [String] = letters
             .split(separator: " ")
-            .map(String.init)
+            .map { String($0) }
             .filter { $0.count > 1 && !noise.contains($0) }
         return words.prefix(3).joined(separator: " ")
     }

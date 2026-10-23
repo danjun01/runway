@@ -64,7 +64,7 @@ npm run dev              # http://localhost:8787
 | --- | --- |
 | `ANTHROPIC_API_KEY` | [platform.claude.com](https://platform.claude.com/settings/keys) |
 | `PLAID_CLIENT_ID`, `PLAID_SECRET` | [Plaid dashboard](https://dashboard.plaid.com/developers/keys). Sandbox keys are free. |
-| `ANTHROPIC_MODEL` | Optional. Defaults to `claude-opus-5-5`; set `claude-sonnet-5-5` to cut the chat cost roughly in half. |
+| `ANTHROPIC_MODEL` | Optional. Defaults to `claude-haiku-5-5`, the cheapest model. Set `claude-sonnet-5-5` or `claude-opus-5-5` for more careful planning advice. |
 | `ANTHROPIC_EFFORT` | Optional. `medium` by default; `low` is cheaper and faster, `high` thinks longer. |
 | `PLAID_ENV` | `sandbox` while testing, `production` for your real banks |
 

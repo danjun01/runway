@@ -15,6 +15,8 @@ final class AppStore {
     var incomeSources: [IncomeSource] = []
     /// Merchant key -> bucket id, set by moving a transaction to a bucket.
     var bucketRules: [String: String] = [:]
+    var plannedExpenses: [PlannedExpense] = []
+    var taxSettings = TaxSettings()
     var dailySummaryEnabled = false
     /// Minutes after midnight for the daily summary.
     var dailySummaryMinutes = 9 * 60
@@ -54,7 +56,8 @@ final class AppStore {
 
     var engine: BudgetEngine {
         BudgetEngine(snapshot: snapshot ?? DemoData.empty, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
-                     savedIncome: incomeSources, bucketRules: bucketRules, countsDetectedIncome: isDemo)
+                     savedIncome: incomeSources, bucketRules: bucketRules, countsDetectedIncome: isDemo,
+                     plannedExpenses: plannedExpenses, taxSettings: taxSettings)
     }
 
     var institutions: [Institution] { snapshot?.institutions ?? [] }
@@ -201,6 +204,27 @@ final class AppStore {
         save()
     }
 
+    // MARK: Planning ahead
+
+    func savePlanned(_ expense: PlannedExpense) {
+        if let index = plannedExpenses.firstIndex(where: { $0.id == expense.id }) {
+            plannedExpenses[index] = expense
+        } else {
+            plannedExpenses.append(expense)
+        }
+        save()
+    }
+
+    func deletePlanned(_ id: String) {
+        plannedExpenses.removeAll { $0.id == id }
+        save()
+    }
+
+    func setTaxSettings(_ settings: TaxSettings) {
+        taxSettings = settings
+        save()
+    }
+
     // MARK: Daily summary
 
     /// Turns the morning notification on (asking for permission) or off.
@@ -243,6 +267,8 @@ final class AppStore {
         monthlySavingsGoal = 0
         incomeSources = []
         bucketRules = [:]
+        plannedExpenses = []
+        taxSettings = TaxSettings()
         dailySummaryEnabled = false
         DailySummary.cancel()
         hasOnboarded = false
@@ -292,6 +318,8 @@ final class AppStore {
         // Optional so state saved by earlier versions still loads.
         var incomeSources: [IncomeSource]?
         var bucketRules: [String: String]?
+        var plannedExpenses: [PlannedExpense]?
+        var taxSettings: TaxSettings?
         var dailySummaryEnabled: Bool?
         var dailySummaryMinutes: Int?
         var hasOnboarded: Bool
@@ -307,6 +335,7 @@ final class AppStore {
         guard !isPreview else { return }
         let state = Persisted(snapshot: isDemo ? nil : snapshot, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
                               incomeSources: incomeSources, bucketRules: bucketRules,
+                              plannedExpenses: plannedExpenses, taxSettings: taxSettings,
                               dailySummaryEnabled: dailySummaryEnabled, dailySummaryMinutes: dailySummaryMinutes, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
         do {
             try FileManager.default.createDirectory(at: URL.applicationSupportDirectory, withIntermediateDirectories: true)
@@ -325,6 +354,8 @@ final class AppStore {
         monthlySavingsGoal = state.monthlySavingsGoal
         incomeSources = state.incomeSources ?? []
         bucketRules = state.bucketRules ?? [:]
+        plannedExpenses = state.plannedExpenses ?? []
+        taxSettings = state.taxSettings ?? TaxSettings()
         dailySummaryEnabled = state.dailySummaryEnabled ?? false
         dailySummaryMinutes = state.dailySummaryMinutes ?? 9 * 60
         hasOnboarded = state.hasOnboarded

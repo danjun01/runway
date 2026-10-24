@@ -66,6 +66,8 @@ struct IncomeSource: Codable, Equatable, Identifiable, Hashable {
     /// Plaid's recurring stream, when the source came from one. Its transaction
     /// ids match deposits exactly even when names drift.
     var streamId: String?
+    /// No taxes are withheld (freelance or 1099 income), so part of each deposit is set aside for taxes.
+    var untaxed: Bool?
 
     var counts: Bool { status == .confirmed }
     var isManual: Bool { id.hasPrefix("manual:") }
@@ -94,4 +96,47 @@ struct Paycheck: Identifiable, Hashable {
     var amount: Double
     var state: State
     var id: String { "\(sourceId)|\(Day.string(date))|\(state.rawValue)" }
+}
+
+/// A cost that doesn't come every month: car insurance every 6 months, property
+/// tax, an annual subscription. Runway sets a little aside each month so the
+/// bill is covered when it lands, YNAB style.
+struct PlannedExpense: Codable, Equatable, Identifiable, Hashable {
+    var id: String
+    var name: String
+    var amount: Double
+    /// The next time it's due (yyyy-MM-dd), as of when it was last edited.
+    var dueDate: String
+    /// Months between payments, or nil for a one-time expense.
+    var everyMonths: Int?
+    /// Already put aside for the next payment when it was last edited.
+    var savedAtStart: Double
+    /// The month (yyyy-MM-dd, first of the month) setting aside began.
+    var startMonth: String
+    /// The Plaid recurring stream it was created from, so the same charge isn't also counted as a bill.
+    var streamId: String?
+
+    static func new(name: String, amount: Double, dueDate: Date, everyMonths: Int?, saved: Double,
+                    streamId: String? = nil, today: Date = .now) -> PlannedExpense {
+        PlannedExpense(id: "planned:\(UUID().uuidString)", name: name, amount: amount, dueDate: Day.string(dueDate),
+                       everyMonths: everyMonths, savedAtStart: saved, startMonth: Day.string(Day.startOfMonth(today)),
+                       streamId: streamId)
+    }
+
+    var repeatText: String {
+        switch everyMonths {
+        case nil: "One time"
+        case 1: "Every month"
+        case 12: "Every year"
+        case let n?: "Every \(n) months"
+        }
+    }
+}
+
+/// Self-employment taxes: a share of income that has no tax withheld gets set
+/// aside, and estimated payments are due four times a year.
+struct TaxSettings: Codable, Equatable {
+    var enabled = false
+    /// The share of untaxed income to set aside, e.g. 0.3 for 30%.
+    var rate = 0.3
 }

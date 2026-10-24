@@ -44,6 +44,12 @@ Runway finds recurring income from Plaid's recurring streams and from regular de
 
 The budget is a zero-based monthly plan, like YNAB, with one difference: you can assign income you're expecting, not just money that's already in the account. Each month's paychecks are marked **arrived** or **expected**, and the plan shows how much is left to assign. Arrived money backs your savings goal and bills first, then flexible buckets; anything that depends on a paycheck that hasn't landed says so ("$300 waits on Oct 30 pay"). Add your own buckets with **New bucket**, and long-press any transaction to move that merchant to a different bucket.
 
+### Plan ahead
+
+For bills that don't come every month (car insurance every 6 months, property tax, an annual renewal), add a **planned expense** under **Plan ahead** on the Budget tab. Each month sets aside an equal share of what's still needed before the due date, so the bill is covered when it lands; that money is held back from Safe to spend. Yearly charges Plaid already sees are offered as one-tap suggestions. The same screen shows the **next 12 months**: income on your confirmed schedule minus bills, your budget, and set-asides.
+
+If you pay your own taxes (freelance or 1099 income), turn on **Self-employment taxes**, pick a percentage, and mark which income has nothing withheld. Runway holds back that share of each deposit, estimates the quarterly payments (Apr 15, Jun 15, Sep 15, Jan 15), and subtracts tax payments once they show up.
+
 ## Run it on your Mac
 
 You need Xcode 16 or newer, Node 20+, and [Homebrew](https://brew.sh).

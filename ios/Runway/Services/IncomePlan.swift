@@ -216,14 +216,19 @@ extension BudgetEngine {
         var paychecks: [Paycheck]
         var savingsGoal: Double
         var buckets: [BucketFunding]
+        /// This month's set-aside for planned expenses.
+        var plannedSetAside: Double = 0
+        /// The tax share of this month's untaxed income.
+        var taxSetAside: Double = 0
 
         var arrived: Double { paychecks.filter { $0.state == .arrived }.reduce(0) { $0 + $1.amount } }
         var expected: Double { paychecks.filter { $0.state == .expected }.reduce(0) { $0 + $1.amount } }
         var income: Double { arrived + expected }
         var assigned: Double { buckets.reduce(0) { $0 + $1.assigned } }
-        var leftToAssign: Double { income - savingsGoal - assigned }
-        /// Assigned money (including savings) that's waiting on projected paychecks.
-        var assignedFromExpected: Double { max(0, min(expected, savingsGoal + assigned - arrived)) }
+        var setAsides: Double { savingsGoal + plannedSetAside + taxSetAside }
+        var leftToAssign: Double { income - setAsides - assigned }
+        /// Assigned money (including set-asides) that's waiting on projected paychecks.
+        var assignedFromExpected: Double { max(0, min(expected, setAsides + assigned - arrived)) }
     }
 
     var plan: Plan {
@@ -248,14 +253,24 @@ extension BudgetEngine {
             return (arrived, expected, last)
         }
 
+        let untaxedIds = Set(untaxedSources.map(\.id))
+        let taxSetAside = taxSettings.enabled
+            ? min(max(taxSettings.rate, 0), 0.6) * paychecks.filter { untaxedIds.contains($0.sourceId) && $0.state != .missed }
+                .reduce(0) { $0 + $1.amount }
+            : 0
+        let plannedSetAside = plannedStatuses.reduce(0) { $0 + ($1.paidThisMonth ? 0 : $1.thisMonth) }
+        // Taxes and set-asides come off the top, before any bucket.
+        _ = draw(taxSetAside)
         _ = draw(monthlySavingsGoal)
+        _ = draw(plannedSetAside)
         let ordered = budgets.filter(\.isFixed) + budgets.filter { !$0.isFixed }
         let buckets = ordered.map { category in
             let source = draw(category.monthlyAmount)
             return BucketFunding(category: category, assigned: category.monthlyAmount, spent: spent(in: category.id),
                                  fromArrived: source.arrived, fromExpected: source.expected, waitingOn: source.last)
         }
-        return Plan(paychecks: paychecks, savingsGoal: monthlySavingsGoal, buckets: buckets)
+        return Plan(paychecks: paychecks, savingsGoal: monthlySavingsGoal, buckets: buckets,
+                    plannedSetAside: plannedSetAside, taxSetAside: taxSetAside)
     }
 
     func funding(for categoryId: String) -> BucketFunding? {

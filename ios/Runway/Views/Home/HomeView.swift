@@ -5,7 +5,7 @@ struct HomeView: View {
     @State private var addingBucket = false
     @State private var path = NavigationPath()
 
-    private enum Route: Hashable { case income }
+    private enum Route: Hashable { case income, planAhead }
 
     var body: some View {
         let engine = store.engine
@@ -20,6 +20,11 @@ struct HomeView: View {
 
                     NavigationLink(value: Route.income) {
                         PlanCard(plan: plan, unreviewed: engine.unreviewedIncome.count)
+                    }
+                    .buttonStyle(.plain)
+
+                    NavigationLink(value: Route.planAhead) {
+                        PlanAheadCard(planned: engine.plannedStatuses, tax: engine.taxStatus)
                     }
                     .buttonStyle(.plain)
 
@@ -88,7 +93,12 @@ struct HomeView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Budget")
             .navigationDestination(for: BudgetCategory.self) { CategoryDetailView(categoryId: $0.id) }
-            .navigationDestination(for: Route.self) { _ in IncomeView() }
+            .navigationDestination(for: Route.self) { route in
+                switch route {
+                case .income: IncomeView()
+                case .planAhead: PlanAheadView()
+                }
+            }
             .refreshable { await store.refresh() }
             .sheet(isPresented: $addingBucket) { NewBucketSheet() }
             .toolbar {
@@ -164,6 +174,12 @@ private struct SafeToSpendCard: View {
                                  : "Owed on credit cards",
                                  value: -safe.creditCardBalances)
                     BreakdownRow(label: "Bills still to pay", value: -safe.billsRemaining)
+                    if safe.plannedSetAside > 0 {
+                        BreakdownRow(label: "Set aside for planned expenses", value: -safe.plannedSetAside)
+                    }
+                    if safe.taxSetAside > 0 {
+                        BreakdownRow(label: "Set aside for taxes", value: -safe.taxSetAside)
+                    }
                     if safe.savingsGoal > 0 {
                         BreakdownRow(label: "Savings goal", value: -safe.savingsGoal)
                     }
@@ -469,7 +485,7 @@ private struct PlanCard: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("Assigned").font(.caption).foregroundStyle(.secondary)
-                    Text((plan.assigned + plan.savingsGoal).currency()).font(.title3.weight(.semibold)).monospacedDigit()
+                    Text((plan.assigned + plan.setAsides).currency()).font(.title3.weight(.semibold)).monospacedDigit()
                 }
             }
             if plan.assignedFromExpected > 0.5 {

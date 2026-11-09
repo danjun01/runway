@@ -44,6 +44,12 @@ Runway finds recurring income from Plaid's recurring streams and from regular de
 
 The budget is a zero-based monthly plan, like YNAB, with one difference: you can assign income you're expecting, not just money that's already in the account. Each month's paychecks are marked **arrived** or **expected**, and the plan shows how much is left to assign. Arrived money backs your savings goal and bills first, then flexible buckets; anything that depends on a paycheck that hasn't landed says so ("$300 waits on Oct 30 pay"). Add your own buckets with **New bucket**, and long-press any transaction to move that merchant to a different bucket.
 
+### Trends, age of money, and automatic reconciling
+
+**Trends** (at the bottom of the Budget tab) shows spending month by month, and each bucket this month next to its usual. It also shows **age of money**: roughly how many days a dollar sits in your accounts before you spend it, using income first in, first out, averaged over your last 10 purchases. Past 30 days means you're living on last month's income.
+
+There's no manual reconciling. On every sync, Runway checks that each account's new balance equals the last balance plus the new transactions. If they don't match, the account says so on the Accounts tab (usually a missing or still-pending transaction). The warning clears on its own once things line up, or you can swipe to dismiss it.
+
 ### Review inbox
 
 New transactions land in **To review** at the top of Activity, already sorted into a bucket. Tap the check if it's right, or **Approve all**. Tap any transaction to change its bucket for just that one (or for everything from that merchant), or to split it across several buckets, like a Costco run that's part groceries and part home. A one-off change can also turn a transfer into spending, for a Venmo that paid for concert tickets.

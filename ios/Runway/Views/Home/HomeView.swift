@@ -6,7 +6,7 @@ struct HomeView: View {
     @State private var covering: BudgetEngine.BucketFunding?
     @State private var path = NavigationPath()
 
-    private enum Route: Hashable { case income }
+    private enum Route: Hashable { case income, trends }
 
     var body: some View {
         let engine = store.engine
@@ -98,6 +98,23 @@ struct HomeView: View {
                     }
                     .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 4)
+
+                    NavigationLink(value: Route.trends) {
+                        Card {
+                            HStack(spacing: 12) {
+                                CategoryIcon(symbol: "chart.bar.fill")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Trends").font(.subheadline.weight(.semibold))
+                                    Text(engine.ageOfMoney.map { "Your money is \($0) days old" } ?? "Spending month by month")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 6)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
@@ -105,7 +122,12 @@ struct HomeView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Budget")
             .navigationDestination(for: BudgetCategory.self) { CategoryDetailView(categoryId: $0.id) }
-            .navigationDestination(for: Route.self) { _ in IncomeView() }
+            .navigationDestination(for: Route.self) { route in
+                switch route {
+                case .income: IncomeView()
+                case .trends: TrendsView()
+                }
+            }
             .refreshable { await store.refresh() }
             .sheet(isPresented: $addingBucket) { NewBucketSheet() }
             .sheet(item: $covering) { bucket in

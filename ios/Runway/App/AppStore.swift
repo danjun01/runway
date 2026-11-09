@@ -20,6 +20,12 @@ final class AppStore {
     var assignments: [String: [String: Double]] = [:]
     /// The budget's first month ("yyyy-MM"). Money rolls over from here on.
     var budgetStart: String?
+    /// One-off bucket choices, by transaction id.
+    var transactionBuckets: [String: String] = [:]
+    /// Split transactions: transaction id -> bucket id -> amount.
+    var splits: [String: [String: Double]] = [:]
+    /// Transactions approved in the review inbox.
+    var reviewed: Set<String> = []
     /// The month the Budget tab is showing.
     var viewMonth: Date = Day.startOfMonth(.now)
     var hasOnboarded = false
@@ -59,7 +65,8 @@ final class AppStore {
 
     var engine: BudgetEngine {
         BudgetEngine(snapshot: snapshot ?? DemoData.empty, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
-                     savedIncome: incomeSources, bucketRules: bucketRules, assignments: assignments, budgetStart: budgetStart)
+                     savedIncome: incomeSources, bucketRules: bucketRules, assignments: assignments, budgetStart: budgetStart,
+                     transactionBuckets: transactionBuckets, splits: splits, reviewed: reviewed)
     }
 
     var institutions: [Institution] { snapshot?.institutions ?? [] }
@@ -127,6 +134,9 @@ final class AppStore {
         snapshot = DemoData.snapshot()
         // Start the demo budget last month so rollover has something to show.
         budgetStart = Day.monthKey(Day.addMonths(-1, to: .now))
+        // Leave the last few days in the review inbox.
+        let cutoff = Day.string(Day.calendar.date(byAdding: .day, value: -4, to: .now)!)
+        reviewed = Set(snapshot!.transactions.filter { $0.date < cutoff }.map(\.id))
     }
 
     // MARK: Budget
@@ -236,12 +246,50 @@ final class AppStore {
         } else {
             bucketRules[key] = bucketId
         }
+        transactionBuckets[transaction.id] = nil
         save()
     }
 
     func bucket(for transaction: Transaction) -> BudgetCategory? {
-        BudgetCategory.bucketId(for: transaction, rules: bucketRules, budgets: budgets)
-            .flatMap { id in budgets.first { $0.id == id } }
+        engine.bucketId(for: transaction).flatMap { id in budgets.first { $0.id == id } }
+    }
+
+    // MARK: Review
+
+    /// Puts one transaction in a bucket. With `forMerchant`, every
+    /// transaction from that merchant goes there too, now and later.
+    /// Changing a transaction counts as reviewing it.
+    func categorize(_ transaction: Transaction, as bucketId: String, forMerchant: Bool) {
+        splits[transaction.id] = nil
+        if forMerchant {
+            move(transaction, to: bucketId)
+        } else {
+            let usual = BudgetCategory.bucketId(for: transaction, rules: bucketRules, budgets: budgets)
+            transactionBuckets[transaction.id] = usual == bucketId ? nil : bucketId
+        }
+        reviewed.insert(transaction.id)
+        save()
+    }
+
+    /// Splits a transaction over buckets. An empty split removes it.
+    func split(_ transaction: Transaction, into parts: [String: Double]) {
+        let parts = parts.filter { abs($0.value) > 0.005 }
+        splits[transaction.id] = parts.count > 1 ? parts : nil
+        if parts.count == 1, let only = parts.keys.first {
+            transactionBuckets[transaction.id] = only
+        }
+        reviewed.insert(transaction.id)
+        save()
+    }
+
+    func approve(_ transaction: Transaction) {
+        reviewed.insert(transaction.id)
+        save()
+    }
+
+    func approveAll() {
+        reviewed.formUnion(engine.toReview.map(\.id))
+        save()
     }
 
     // MARK: Income
@@ -271,6 +319,8 @@ final class AppStore {
     func finishOnboarding() {
         hasOnboarded = true
         if budgetStart == nil { budgetStart = Day.monthKey(.now) }
+        // The inbox is for what comes in from now on.
+        if !isDemo, let snapshot { reviewed.formUnion(snapshot.transactions.map(\.id)) }
         closePastMonths()
         save()
     }
@@ -283,6 +333,9 @@ final class AppStore {
         bucketRules = [:]
         assignments = [:]
         budgetStart = nil
+        transactionBuckets = [:]
+        splits = [:]
+        reviewed = []
         viewMonth = Day.startOfMonth(.now)
         hasOnboarded = false
         isDemo = false
@@ -333,6 +386,9 @@ final class AppStore {
         var bucketRules: [String: String]?
         var assignments: [String: [String: Double]]?
         var budgetStart: String?
+        var transactionBuckets: [String: String]?
+        var splits: [String: [String: Double]]?
+        var reviewed: [String]?
         var hasOnboarded: Bool
         var isDemo: Bool
         var chat: [ChatMessage]
@@ -342,11 +398,19 @@ final class AppStore {
         URL.applicationSupportDirectory.appending(path: "runway-state.json")
     }
 
+    /// Review marks only matter for recent transactions; drop the rest so the file stays small.
+    private var prunedReviewed: [String] {
+        guard let snapshot else { return Array(reviewed) }
+        let recent = Set(snapshot.transactions.map(\.id))
+        return reviewed.filter(recent.contains)
+    }
+
     func save() {
         guard !isPreview else { return }
         let state = Persisted(snapshot: isDemo ? nil : snapshot, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
                               incomeSources: incomeSources, bucketRules: bucketRules,
-                              assignments: assignments, budgetStart: budgetStart, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
+                              assignments: assignments, budgetStart: budgetStart,
+                              transactionBuckets: transactionBuckets, splits: splits, reviewed: prunedReviewed, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
         do {
             try FileManager.default.createDirectory(at: URL.applicationSupportDirectory, withIntermediateDirectories: true)
             try JSONEncoder().encode(state).write(to: Self.fileURL, options: [.atomic, .completeFileProtection])
@@ -366,6 +430,12 @@ final class AppStore {
         bucketRules = state.bucketRules ?? [:]
         assignments = state.assignments ?? [:]
         budgetStart = state.budgetStart
+        transactionBuckets = state.transactionBuckets ?? [:]
+        splits = state.splits ?? [:]
+        reviewed = Set(state.reviewed ?? [])
+        // First open with the review inbox: start it empty instead of
+        // asking about everything already in the history.
+        if state.reviewed == nil, let snapshot = state.snapshot { reviewed = Set(snapshot.transactions.map(\.id)) }
         hasOnboarded = state.hasOnboarded
         chat = state.chat
         // Existing budgets start rolling over from the month this version first opens.

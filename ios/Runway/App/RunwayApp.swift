@@ -54,6 +54,7 @@ struct MainTabView: View {
                 .tag(AppStore.Tab.home)
             ActivityView()
                 .tabItem { Label("Activity", systemImage: "list.bullet.rectangle") }
+                .badge(store.engine.toReview.count)
                 .tag(AppStore.Tab.activity)
             AskView()
                 .tabItem { Label("Ask", systemImage: "sparkles") }

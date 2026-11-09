@@ -19,6 +19,13 @@ struct BudgetEngine {
     /// The budget's first month ("yyyy-MM"). Money rolls over from here on.
     /// Nil means the budget starts this month.
     var budgetStart: String?
+    /// Transaction id -> bucket id, for one-off changes that shouldn't
+    /// become a rule for the whole merchant.
+    var transactionBuckets: [String: String] = [:]
+    /// Transaction id -> bucket id -> amount, for split transactions.
+    var splits: [String: [String: Double]] = [:]
+    /// Transactions the user has approved in the review inbox.
+    var reviewed: Set<String> = []
 
     var cal: Calendar { Day.calendar }
     var monthStart: Date { Day.startOfMonth(today) }
@@ -28,7 +35,40 @@ struct BudgetEngine {
     // MARK: Spending
 
     func bucketId(for t: Transaction) -> String? {
-        BudgetCategory.bucketId(for: t, rules: bucketRules, budgets: budgets)
+        // A one-off choice wins, even for a transfer (a Venmo for concert
+        // tickets is spending). Income and card payments never are.
+        if let id = transactionBuckets[t.id], budgets.contains(where: { $0.id == id }),
+           t.category != "INCOME", t.detailedCategory != "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" {
+            return id
+        }
+        return BudgetCategory.bucketId(for: t, rules: bucketRules, budgets: budgets)
+    }
+
+    /// How a transaction's amount is spread over buckets. Usually one bucket;
+    /// a split spreads it over several, and any part the split doesn't cover
+    /// stays in the transaction's usual bucket.
+    func allocations(for t: Transaction) -> [(bucketId: String, amount: Double)] {
+        guard let usual = bucketId(for: t) else { return [] }
+        guard let split = splits[t.id], !split.isEmpty else { return [(usual, t.amount)] }
+        var result = split.filter { id, _ in budgets.contains { $0.id == id } }
+            .sorted { $0.key < $1.key }
+            .map { (bucketId: $0.key, amount: $0.value) }
+        let rest = t.amount - result.reduce(0) { $0 + $1.amount }
+        if abs(rest) > 0.005 {
+            if let i = result.firstIndex(where: { $0.bucketId == usual }) { result[i].amount += rest } else { result.append((usual, rest)) }
+        }
+        return result
+    }
+
+    func isSplit(_ t: Transaction) -> Bool { allocations(for: t).count > 1 }
+
+    /// Recent spending the user hasn't looked at yet, newest first. Each one
+    /// already has Runway's best guess at a bucket; approving it is one tap.
+    var toReview: [Transaction] {
+        let cutoff = cal.date(byAdding: .day, value: -30, to: startOfToday)!
+        return snapshot.transactions
+            .filter { $0.day >= cutoff && !$0.pending && !reviewed.contains($0.id) && bucketId(for: $0) != nil }
+            .sorted { $0.date > $1.date }
     }
 
     var spendingThisMonth: [Transaction] { spending(in: monthStart) }
@@ -43,11 +83,13 @@ struct BudgetEngine {
     func spent(in categoryId: String) -> Double { spent(in: categoryId, month: monthStart) }
 
     func spent(in categoryId: String, month: Date) -> Double {
-        transactions(in: categoryId, month: month).reduce(0) { $0 + $1.amount }
+        spending(in: month).reduce(0) { total, t in
+            total + allocations(for: t).filter { $0.bucketId == categoryId }.reduce(0) { $0 + $1.amount }
+        }
     }
 
     func transactions(in categoryId: String, month: Date? = nil) -> [Transaction] {
-        spending(in: month ?? monthStart).filter { bucketId(for: $0) == categoryId }
+        spending(in: month ?? monthStart).filter { t in allocations(for: t).contains { $0.bucketId == categoryId } }
     }
 
     var totalBudgeted: Double { budgets.reduce(0) { $0 + $1.monthlyAmount } }
@@ -236,9 +278,10 @@ struct BudgetEngine {
 
         var monthly: [String: [String: Double]] = [:]
         for t in snapshot.transactions {
-            guard let id = bucketId(for: t) else { continue }
             let month = String(t.date.prefix(7))
-            monthly[month, default: [:]][name(of: id), default: 0] += t.amount
+            for part in allocations(for: t) {
+                monthly[month, default: [:]][name(of: part.bucketId), default: 0] += part.amount
+            }
         }
 
         return ChatContext(
@@ -312,7 +355,8 @@ struct BudgetEngine {
                 .prefix(300)
                 .map {
                     ChatContext.Txn(date: $0.date, name: $0.displayName, amount: $0.amount.rounded2,
-                          category: bucketId(for: $0).map(name(of:)) ?? $0.category.lowercased(),
+                          category: isSplit($0) ? "split: " + allocations(for: $0).map { "\(name(of: $0.bucketId)) \($0.amount.rounded2)" }.joined(separator: ", ")
+                            : bucketId(for: $0).map(name(of:)) ?? $0.category.lowercased(),
                           account: accountName[$0.accountId] ?? "", pending: $0.pending)
                 }
         )

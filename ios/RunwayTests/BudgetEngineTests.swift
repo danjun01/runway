@@ -335,4 +335,48 @@ final class BudgetEngineTests: XCTestCase {
                                   reviewed: [approved.id])
         XCTAssertEqual(engine.toReview.map(\.id), [fresh.id])
     }
+
+    // MARK: Targets
+
+    private func budgets(with target: BucketTarget, assigned: Double = 0) -> (budgets: [BudgetCategory], id: String) {
+        var budgets = BudgetCategory.defaults
+        var bucket = BudgetCategory.custom(name: "Car insurance", isFixed: true, amount: assigned)
+        bucket.target = target
+        budgets.append(bucket)
+        return (budgets, bucket.id)
+    }
+
+    func testSaveByTargetSpreadsWhatsMissing() throws {
+        let setup = budgets(with: BucketTarget(kind: .saveBy, amount: 1200, by: "2027-03"))
+        let engine = BudgetEngine(snapshot: snapshot(), budgets: setup.budgets, monthlySavingsGoal: 0, today: today)
+        let bucket = try XCTUnwrap(engine.plan.buckets.first { $0.id == setup.id })
+        // October through March is six months.
+        XCTAssertEqual(bucket.targetThisMonth, 200)
+        XCTAssertEqual(bucket.targetRemaining, 200)
+        XCTAssertEqual(engine.plan.targetsRemaining, 200)
+    }
+
+    func testSaveByTargetCountsMoneyAlreadySaved() throws {
+        let setup = budgets(with: BucketTarget(kind: .saveBy, amount: 1200, by: "2027-03"), assigned: 100)
+        let engine = BudgetEngine(snapshot: snapshot(), budgets: setup.budgets, monthlySavingsGoal: 0, today: today,
+                                  assignments: ["2026-09": [setup.id: 300]], budgetStart: "2026-09")
+        let bucket = try XCTUnwrap(engine.plan.buckets.first { $0.id == setup.id })
+        XCTAssertEqual(bucket.targetThisMonth, 150) // (1,200 - 300) / 6
+        XCTAssertEqual(bucket.targetRemaining, 50) // 100 is already assigned
+    }
+
+    func testRefillTargetTopsUpWhatsLeft() throws {
+        let setup = budgets(with: BucketTarget(kind: .refill, amount: 400), assigned: 300)
+        let engine = BudgetEngine(snapshot: snapshot(), budgets: setup.budgets, monthlySavingsGoal: 0, today: today,
+                                  assignments: ["2026-09": [setup.id: 100]], budgetStart: "2026-09")
+        let bucket = try XCTUnwrap(engine.plan.buckets.first { $0.id == setup.id })
+        XCTAssertEqual(bucket.targetThisMonth, 300)
+        XCTAssertEqual(bucket.targetRemaining, 0)
+    }
+
+    func testPastDueTargetAsksForNothing() throws {
+        let setup = budgets(with: BucketTarget(kind: .saveBy, amount: 500, by: "2026-09"))
+        let engine = BudgetEngine(snapshot: snapshot(), budgets: setup.budgets, monthlySavingsGoal: 0, today: today)
+        XCTAssertEqual(engine.plan.buckets.first { $0.id == setup.id }?.targetRemaining, 0)
+    }
 }

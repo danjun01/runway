@@ -182,6 +182,31 @@ final class AppStore {
         save()
     }
 
+    func setTarget(_ id: String, _ target: BucketTarget?) {
+        guard let index = budgets.firstIndex(where: { $0.id == id }) else { return }
+        budgets[index].target = target
+        save()
+    }
+
+    /// Assigns what every target still needs this month, bills first, until
+    /// left to assign runs out. Returns how much it assigned.
+    @discardableResult
+    func fundTargets(in month: Date) -> Double {
+        closePastMonths()
+        let plan = engine.plan(for: month)
+        var money = max(0, plan.leftToAssign)
+        var total = 0.0
+        let key = Day.monthKey(month)
+        for bucket in plan.buckets where bucket.targetRemaining > 0.005 && money > 0.005 {
+            let add = min(bucket.targetRemaining, money)
+            assignments[key, default: [:]][bucket.id] = bucket.assigned + add
+            money -= add
+            total += add
+        }
+        save()
+        return total
+    }
+
     /// Moves money between buckets in a month. A nil bucket means "left to
     /// assign": moving from it assigns new money, moving to it un-assigns.
     func moveMoney(_ amount: Double, from: String?, to: String?, in month: Date) {

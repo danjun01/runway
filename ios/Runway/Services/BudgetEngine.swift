@@ -328,7 +328,9 @@ struct BudgetEngine {
                                            assigned: $0.assigned.rounded2, spent: $0.spent.rounded2, available: $0.available.rounded2,
                                            backedByArrivedIncome: $0.fromArrived.rounded2,
                                            waitingOnProjectedIncome: $0.fromExpected.rounded2,
-                                           waitingOnPaycheckDate: $0.waitingOn.map(Day.string))
+                                           waitingOnPaycheckDate: $0.waitingOn.map(Day.string),
+                                           target: $0.category.target.map(Self.describe),
+                                           targetStillToAssignThisMonth: $0.targetRemaining.rounded2)
                 }
             ),
             accounts: snapshot.accounts.map {
@@ -368,6 +370,13 @@ struct BudgetEngine {
         case .detected: "auto-detected, counted"
         case .suggested: "possible income, not counted until the user confirms it"
         case .ignored: "user said this is not income, not counted"
+        }
+    }
+
+    private static func describe(_ target: BucketTarget) -> String {
+        switch target.kind {
+        case .saveBy: "save \(target.amount.rounded2) by \(target.by ?? "?")"
+        case .refill: "start each month with \(target.amount.rounded2)"
         }
     }
 
@@ -427,6 +436,8 @@ struct ChatContext: Encodable {
         var bucket, kind: String
         var rolledOver, assigned, spent, available, backedByArrivedIncome, waitingOnProjectedIncome: Double
         var waitingOnPaycheckDate: String?
+        var target: String?
+        var targetStillToAssignThisMonth: Double
     }
     struct AccountLine: Encodable {
         var name, institution, type: String

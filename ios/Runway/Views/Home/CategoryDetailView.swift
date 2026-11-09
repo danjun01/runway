@@ -9,6 +9,7 @@ struct CategoryDetailView: View {
     @FocusState private var editing: Bool
     @State private var confirmDelete = false
     @State private var moving: MoveRequest?
+    @State private var editingTarget = false
 
     private struct MoveRequest: Identifiable {
         var from: String?
@@ -105,6 +106,33 @@ struct CategoryDetailView: View {
             }
 
             Section {
+                if let target = category.target, let funding {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(targetTitle(target)).font(.subheadline.weight(.medium))
+                        Text(funding.targetRemaining > 0.5
+                             ? "Assign \(funding.targetRemaining.currency(cents: true)) more in \(monthName) to stay on track."
+                             : funding.targetThisMonth > 0.5 ? "On track for \(monthName)." : "Nothing more needed in \(monthName).")
+                            .font(.caption)
+                            .foregroundStyle(funding.targetRemaining > 0.5 ? Theme.warning : Theme.positive)
+                    }
+                    if funding.targetRemaining > 0.5 {
+                        Button("Assign \(funding.targetRemaining.currency(cents: true))", systemImage: "target") {
+                            store.moveMoney(funding.targetRemaining, from: nil, to: categoryId, in: month)
+                        }
+                        .font(.subheadline.weight(.semibold))
+                    }
+                }
+                Button(category.target == nil ? "Set a target" : "Change target", systemImage: "scope") { editingTarget = true }
+                    .font(.subheadline.weight(.semibold))
+            } header: {
+                Text("Target")
+            } footer: {
+                if category.target == nil {
+                    Text("Saving for something, like $1,200 of car insurance in March? A target tells you what to set aside each month.")
+                }
+            }
+
+            Section {
                 ForEach(transactions) { TransactionRow(transaction: $0) }
             } header: {
                 Text(transactions.isEmpty ? "No transactions in \(monthName)" : monthName)
@@ -124,6 +152,9 @@ struct CategoryDetailView: View {
         .onChange(of: funding?.assigned) { _, _ in if !editing { syncFields() } }
         .onChange(of: editing) { _, isEditing in if !isEditing { commit() } }
         .onChange(of: repeating) { _, _ in commit() }
+        .sheet(isPresented: $editingTarget) {
+            TargetSheet(categoryId: categoryId, target: category.target)
+        }
         .sheet(item: $moving) { request in
             MoveMoneySheet(month: month, from: request.from, to: request.to, amount: request.amount, title: request.title)
         }
@@ -134,6 +165,16 @@ struct CategoryDetailView: View {
             }
         } message: {
             Text("Its transactions go back to their usual buckets.")
+        }
+    }
+
+    private func targetTitle(_ target: BucketTarget) -> String {
+        switch target.kind {
+        case .saveBy:
+            let by = target.by.map { Day.month($0).formatted(.dateTime.month(.wide).year()) } ?? "?"
+            return "Save \(target.amount.currency()) by \(by)"
+        case .refill:
+            return "Start each month with \(target.amount.currency())"
         }
     }
 

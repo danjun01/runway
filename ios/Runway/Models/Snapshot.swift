@@ -150,6 +150,16 @@ enum Day {
         calendar.date(byAdding: DateComponents(month: 1, day: -1), to: startOfMonth(date))!
     }
 
+    /// "yyyy-MM" for the month containing `date`.
+    static func monthKey(_ date: Date) -> String { String(string(date).prefix(7)) }
+
+    /// The first day of a "yyyy-MM" month.
+    static func month(_ key: String) -> Date { parse(key + "-01") }
+
+    static func addMonths(_ months: Int, to date: Date) -> Date {
+        calendar.date(byAdding: .month, value: months, to: startOfMonth(date))!
+    }
+
     /// Days from `date` through the end of its month, counting today.
     static func daysLeftInMonth(_ date: Date) -> Int {
         let start = calendar.startOfDay(for: date)

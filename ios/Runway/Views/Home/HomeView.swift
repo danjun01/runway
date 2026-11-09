@@ -3,49 +3,62 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppStore.self) private var store
     @State private var addingBucket = false
+    @State private var covering: BudgetEngine.BucketFunding?
     @State private var path = NavigationPath()
 
     private enum Route: Hashable { case income }
 
     var body: some View {
         let engine = store.engine
-        let plan = engine.plan
+        let month = store.viewMonth
+        let isCurrent = Day.monthKey(month) == engine.currentMonthKey
+        let plan = engine.plan(for: month)
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    SafeToSpendCard(safe: engine.safeToSpend)
+                    MonthSwitcher(earliest: Day.month(engine.startMonthKey))
 
-                    QuickAsk()
+                    if isCurrent {
+                        SafeToSpendCard(safe: engine.safeToSpend)
+                        QuickAsk()
+                    }
 
                     NavigationLink(value: Route.income) {
-                        PlanCard(plan: plan, unreviewed: engine.unreviewedIncome.count)
+                        PlanCard(plan: plan, unreviewed: isCurrent ? engine.unreviewedIncome.count : 0)
                     }
                     .buttonStyle(.plain)
 
-                    let plans = engine.cardPlans
+                    let overspent = plan.overspent
+                    if !overspent.isEmpty {
+                        OverspentCard(buckets: overspent) { covering = $0 }
+                    }
+
+                    let plans = isCurrent ? engine.cardPlans : []
                     if !plans.isEmpty {
                         SectionHeader(title: "Credit cards", trailing: "Pay to avoid interest")
                         ForEach(plans) { CardPlanRow(plan: $0) }
                     }
 
-                    let bills = plan.buckets.filter { $0.category.isFixed && ($0.assigned > 0 || $0.spent > 0) }
+                    let bills = plan.buckets.filter { $0.category.isFixed && ($0.funded != 0 || $0.spent != 0) }
                     if !bills.isEmpty {
-                        SectionHeader(title: "Bills", trailing: "\(engine.billsRemaining.currency()) left to pay")
+                        let unpaid = bills.reduce(0) { $0 + max(0, $1.available) }
+                        SectionHeader(title: "Bills", trailing: "\(unpaid.currency()) left to pay")
                         Card {
                             ForEach(bills) { CategoryRow(funding: $0) }
                         }
                     }
 
-                    let flexible = plan.buckets.filter { !$0.category.isFixed && ($0.assigned > 0 || $0.spent > 0) }
-                    SectionHeader(title: "Spending", trailing: Date.now.formatted(.dateTime.month(.wide)))
+                    let flexible = plan.buckets.filter { !$0.category.isFixed && ($0.funded != 0 || $0.spent != 0) }
+                    SectionHeader(title: "Spending", trailing: month.formatted(.dateTime.month(.wide)))
                     Card {
                         ForEach(flexible) { CategoryRow(funding: $0) }
                         if flexible.isEmpty {
-                            Text("No spending yet this month.").foregroundStyle(.secondary)
+                            Text(isCurrent ? "No spending yet this month." : "Nothing assigned or spent this month.")
+                                .foregroundStyle(.secondary)
                         }
                     }
 
-                    let empty = plan.buckets.filter { $0.assigned == 0 && $0.spent == 0 }
+                    let empty = plan.buckets.filter { $0.funded == 0 && $0.spent == 0 }
                     HStack {
                         Button("New bucket", systemImage: "plus.circle.fill") { addingBucket = true }
                         Spacer()
@@ -73,6 +86,10 @@ struct HomeView: View {
             .navigationDestination(for: Route.self) { _ in IncomeView() }
             .refreshable { await store.refresh() }
             .sheet(isPresented: $addingBucket) { NewBucketSheet() }
+            .sheet(item: $covering) { bucket in
+                MoveMoneySheet(month: month, from: plan.bestSource(toCover: -bucket.available, excluding: bucket.id),
+                               to: bucket.id, amount: -bucket.available, title: "Cover \(bucket.category.name)")
+            }
             .toolbar {
                 if store.isDemo {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -253,9 +270,9 @@ struct CategoryRow: View {
                         Text(category.name).font(.subheadline.weight(.medium))
                         Spacer()
                         Text(remainingText).font(.subheadline).monospacedDigit()
-                            .foregroundStyle(spent > category.monthlyAmount && category.monthlyAmount > 0 ? Theme.negative : .secondary)
+                            .foregroundStyle(funding.isOverspent ? Theme.negative : .secondary)
                     }
-                    BudgetBar(spent: spent, budget: category.monthlyAmount)
+                    BudgetBar(spent: spent, budget: funding.funded)
                     if funding.fromExpected > 0.5, let date = funding.waitingOn {
                         Label("\(funding.fromExpected.currency()) waits on \(date.shortDay) pay", systemImage: "clock")
                             .font(.caption).foregroundStyle(.secondary)
@@ -268,8 +285,7 @@ struct CategoryRow: View {
     }
 
     private var remainingText: String {
-        guard category.monthlyAmount > 0 else { return "\(spent.currency()) spent" }
-        let left = category.monthlyAmount - spent
+        let left = funding.available
         return left >= 0 ? "\(left.currency()) left" : "\((-left).currency()) over"
     }
 }
@@ -282,7 +298,7 @@ private struct PlanCard: View {
     var body: some View {
         Card {
             HStack(alignment: .firstTextBaseline) {
-                Text("\(Date.now.formatted(.dateTime.month(.wide))) income").font(.headline)
+                Text("\(plan.month.formatted(.dateTime.month(.wide))) income").font(.headline)
                 Spacer()
                 Text(plan.income.currency()).font(.headline).monospacedDigit()
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
@@ -291,6 +307,14 @@ private struct PlanCard: View {
             HStack(spacing: 14) {
                 Legend(color: Theme.positive, text: "\(plan.arrived.currency()) arrived")
                 Legend(color: Theme.positive.opacity(0.35), text: "\(plan.expected.currency()) expected")
+            }
+            let lastMonth = Day.addMonths(-1, to: plan.month).formatted(.dateTime.month(.abbreviated))
+            if abs(plan.carriedOver) > 0.5 {
+                PlanLine(label: plan.carriedOver > 0 ? "Unassigned from \(lastMonth)" : "Over-assigned in \(lastMonth)",
+                         value: plan.carriedOver)
+            }
+            if plan.overspentLastMonth > 0.5 {
+                PlanLine(label: "Overspent in \(lastMonth)", value: -plan.overspentLastMonth)
             }
             Divider()
             HStack {
@@ -398,5 +422,93 @@ private struct NewBucketSheet: View {
             }
         }
         .presentationDetents([.medium])
+    }
+}
+
+private struct PlanLine: View {
+    var label: String
+    var value: Double
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text((value >= 0 ? "+" : "\u{2212}") + abs(value).currency()).monospacedDigit()
+        }
+        .font(.caption)
+        .foregroundStyle(value >= 0 ? Color.secondary : Theme.negative)
+    }
+}
+
+/// Back and forth between months. Past months show what happened; future
+/// months let you assign ahead.
+private struct MonthSwitcher: View {
+    @Environment(AppStore.self) private var store
+    var earliest: Date
+
+    var body: some View {
+        let month = store.viewMonth
+        let thisMonth = Day.startOfMonth(.now)
+        HStack {
+            Button {
+                withAnimation(.snappy) { store.viewMonth = Day.addMonths(-1, to: month) }
+            } label: {
+                Image(systemName: "chevron.left").padding(8)
+            }
+            .disabled(month <= earliest)
+            .accessibilityLabel("Previous month")
+
+            Spacer()
+            VStack(spacing: 2) {
+                Text(month.formatted(.dateTime.month(.wide).year())).font(.headline)
+                if month != thisMonth {
+                    Button("Back to this month") {
+                        withAnimation(.snappy) { store.viewMonth = thisMonth }
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+            }
+            Spacer()
+
+            Button {
+                withAnimation(.snappy) { store.viewMonth = Day.addMonths(1, to: month) }
+            } label: {
+                Image(systemName: "chevron.right").padding(8)
+            }
+            .disabled(month >= Day.addMonths(12, to: thisMonth))
+            .accessibilityLabel("Next month")
+        }
+        .font(.body.weight(.semibold))
+        .padding(.top, 4)
+    }
+}
+
+/// Buckets that spent more than they had, with a one-tap way to cover each.
+private struct OverspentCard: View {
+    var buckets: [BudgetEngine.BucketFunding]
+    var cover: (BudgetEngine.BucketFunding) -> Void
+
+    var body: some View {
+        Card {
+            Label(buckets.count == 1 ? "1 bucket is overspent" : "\(buckets.count) buckets are overspent",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(Theme.negative)
+            Text("Cover it with money from another bucket. Anything left uncovered comes out of next month's money.")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(buckets) { bucket in
+                HStack {
+                    CategoryIcon(symbol: bucket.category.symbol, color: Theme.negative)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(bucket.category.name).font(.subheadline.weight(.medium))
+                        Text("\((-bucket.available).currency(cents: true)) over").font(.caption).foregroundStyle(Theme.negative)
+                    }
+                    Spacer()
+                    Button("Cover") { cover(bucket) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+            }
+        }
     }
 }

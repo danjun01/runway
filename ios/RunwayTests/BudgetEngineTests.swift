@@ -209,4 +209,87 @@ final class BudgetEngineTests: XCTestCase {
         XCTAssertEqual(engine.spent(in: pets.id), 40)
         XCTAssertEqual(engine.spent(in: "shopping"), 0)
     }
+
+    // MARK: Rollover and moving money
+
+    private func diningBudget(_ amount: Double = 300) -> [BudgetCategory] {
+        var budgets = BudgetCategory.defaults
+        budgets[budgets.firstIndex { $0.id == "dining" }!].monthlyAmount = amount
+        return budgets
+    }
+
+    private func dining(_ date: String, _ amount: Double) -> Transaction {
+        txn(date, amount, "FOOD_AND_DRINK", "FOOD_AND_DRINK_RESTAURANT")
+    }
+
+    private var septemberPay: Transaction { txn("2026-09-01", -1000, "INCOME", "INCOME_WAGES", name: "GLOBEX") }
+
+    func testUnspentMoneyAndUnassignedIncomeRollOver() throws {
+        let snap = snapshot(transactions: [septemberPay, dining("2026-09-10", 200), dining("2026-10-05", 50)])
+        let engine = BudgetEngine(snapshot: snap, budgets: diningBudget(), monthlySavingsGoal: 0, today: today,
+                                  assignments: ["2026-09": ["dining": 300]], budgetStart: "2026-09")
+        let plan = engine.plan
+        let bucket = try XCTUnwrap(plan.buckets.first { $0.id == "dining" })
+        XCTAssertEqual(bucket.carried, 100)
+        XCTAssertEqual(bucket.assigned, 300)
+        XCTAssertEqual(bucket.available, 350)
+        // 1,000 came in during September and 300 of it was assigned.
+        XCTAssertEqual(plan.carriedOver, 700)
+        XCTAssertEqual(plan.leftToAssign, 400)
+    }
+
+    func testOverspendingComesOutOfNextMonth() throws {
+        let snap = snapshot(transactions: [septemberPay, dining("2026-09-10", 350)])
+        let engine = BudgetEngine(snapshot: snap, budgets: diningBudget(), monthlySavingsGoal: 0, today: today,
+                                  assignments: ["2026-09": ["dining": 300]], budgetStart: "2026-09")
+        let plan = engine.plan
+        let bucket = try XCTUnwrap(plan.buckets.first { $0.id == "dining" })
+        XCTAssertEqual(bucket.carried, 0) // the bucket starts fresh
+        XCTAssertEqual(plan.overspentLastMonth, 50)
+        XCTAssertEqual(plan.leftToAssign, 700 - 50 - 300)
+    }
+
+    func testOverspentBucketShowsUntilCovered() throws {
+        let snap = snapshot(transactions: [dining("2026-10-05", 340)])
+        let before = BudgetEngine(snapshot: snap, budgets: diningBudget(), monthlySavingsGoal: 0, today: today)
+        XCTAssertEqual(before.plan.overspent.map(\.id), ["dining"])
+        XCTAssertEqual(before.plan.overspent.first?.available, -40)
+
+        // Covering it moves 40 from Fun into Dining for October only.
+        var budgets = diningBudget()
+        budgets[budgets.firstIndex { $0.id == "fun" }!].monthlyAmount = 100
+        let after = BudgetEngine(snapshot: snap, budgets: budgets, monthlySavingsGoal: 0, today: today,
+                                 assignments: ["2026-10": ["dining": 340, "fun": 60]])
+        XCTAssertTrue(after.plan.overspent.isEmpty)
+        XCTAssertEqual(after.assigned("fun", in: Day.parse("2026-10-01")), 60)
+        XCTAssertEqual(after.assigned("fun", in: Day.parse("2026-11-01")), 100) // the plan repeats next month
+    }
+
+    func testBucketsMissingFromAClosedMonthHadNothing() {
+        var budgets = diningBudget()
+        budgets.append(.custom(name: "Gifts", isFixed: false, amount: 50))
+        let engine = BudgetEngine(snapshot: snapshot(), budgets: budgets, monthlySavingsGoal: 0, today: today,
+                                  assignments: ["2026-09": ["dining": 300]], budgetStart: "2026-09")
+        XCTAssertEqual(engine.assigned(budgets.last!.id, in: Day.parse("2026-09-01")), 0)
+        XCTAssertEqual(engine.assigned(budgets.last!.id, in: Day.parse("2026-10-01")), 50)
+    }
+
+    func testFutureMonthsProjectEveryPaycheck() {
+        let engine = BudgetEngine(snapshot: snapshot(transactions: paidTwiceInOctober, recurring: [payroll]),
+                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today)
+        let november = engine.plan(for: Day.parse("2026-11-01"))
+        XCTAssertEqual(november.paychecks.map { Day.string($0.date) }, ["2026-11-13", "2026-11-27"])
+        XCTAssertTrue(november.paychecks.allSatisfy { $0.state == .expected })
+        // October's 3,010 (two arrived, one expected) rolls into November unassigned.
+        XCTAssertEqual(november.carriedOver, 3010, accuracy: 0.001)
+    }
+
+    func testSavedUpBillMoneyIsReservedFromSafeToSpend() {
+        var budgets = BudgetCategory.defaults
+        let insurance = BudgetCategory.custom(name: "Car insurance", isFixed: true, amount: 100)
+        budgets.append(insurance)
+        let engine = BudgetEngine(snapshot: snapshot(), budgets: budgets, monthlySavingsGoal: 0, today: today,
+                                  assignments: ["2026-09": [insurance.id: 100]], budgetStart: "2026-09")
+        XCTAssertEqual(engine.billsRemaining, 200) // 100 saved in September + 100 this month
+    }
 }

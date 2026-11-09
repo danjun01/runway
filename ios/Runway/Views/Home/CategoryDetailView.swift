@@ -5,29 +5,69 @@ struct CategoryDetailView: View {
     @Environment(\.dismiss) private var dismiss
     var categoryId: String
     @State private var amountText = ""
+    @State private var repeating = true
     @FocusState private var editing: Bool
     @State private var confirmDelete = false
+    @State private var moving: MoveRequest?
+
+    private struct MoveRequest: Identifiable {
+        var from: String?
+        var to: String?
+        var amount: Double
+        var title: String
+        var id: String { title }
+    }
 
     var body: some View {
         let engine = store.engine
+        let month = store.viewMonth
+        let monthName = month.formatted(.dateTime.month(.wide))
+        let isPast = Day.monthKey(month) < engine.currentMonthKey
         let category = store.budgets.first { $0.id == categoryId } ?? BudgetCategory.defaults[0]
-        let spent = engine.spent(in: categoryId)
-        let transactions = engine.transactions(in: categoryId)
-        let funding = engine.funding(for: categoryId)
+        let plan = engine.plan(for: month)
+        let funding = plan.buckets.first { $0.id == categoryId }
+        let transactions = engine.transactions(in: categoryId, month: month)
 
         List {
-            Section {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        CategoryIcon(symbol: category.symbol)
-                        Text(category.isFixed ? "Bill" : "Flexible spending")
-                            .font(.subheadline).foregroundStyle(.secondary)
+            if let funding {
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            CategoryIcon(symbol: category.symbol, color: funding.isOverspent ? Theme.negative : Theme.accent)
+                            Text(funding.isOverspent ? "Overspent in \(monthName)" : "Available in \(monthName)")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        Text(abs(funding.available).currency(cents: true))
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                            .foregroundStyle(funding.isOverspent ? Theme.negative : Color.primary)
+                        BudgetBar(spent: funding.spent, budget: funding.funded)
+                        VStack(spacing: 6) {
+                            if abs(funding.carried) > 0.005 {
+                                AmountLine(label: "Rolled over", value: funding.carried)
+                            }
+                            AmountLine(label: "Assigned in \(monthName)", value: funding.assigned)
+                            AmountLine(label: "Spent", value: -funding.spent)
+                        }
+                        .padding(.top, 4)
                     }
-                    Text("\(spent.currency()) of \(category.monthlyAmount.currency())")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                    BudgetBar(spent: spent, budget: category.monthlyAmount)
+                    .padding(.vertical, 6)
+
+                    if funding.isOverspent {
+                        Button("Cover \((-funding.available).currency(cents: true))", systemImage: "arrow.down.circle.fill") {
+                            moving = MoveRequest(from: plan.bestSource(toCover: -funding.available, excluding: categoryId),
+                                                 to: categoryId, amount: -funding.available, title: "Cover \(category.name)")
+                        }
+                        .font(.subheadline.weight(.semibold))
+                    }
+                    Button("Move money", systemImage: "arrow.left.arrow.right") {
+                        moving = MoveRequest(from: categoryId, to: nil, amount: 0, title: "Move from \(category.name)")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                } footer: {
+                    if funding.carried > 0.5 {
+                        Text("Unspent money stays in this bucket from month to month.")
+                    }
                 }
-                .padding(.vertical, 6)
             }
 
             Section {
@@ -41,6 +81,9 @@ struct CategoryDetailView: View {
                         Button("Save", action: commit).font(.subheadline.weight(.semibold))
                     }
                 }
+                if !isPast {
+                    Toggle("Same amount every month", isOn: $repeating)
+                }
                 if category.isCustom {
                     Toggle("It's a bill", isOn: Binding(
                         get: { category.isFixed },
@@ -52,17 +95,19 @@ struct CategoryDetailView: View {
                     ))
                 }
             } header: {
-                Text("Assigned each month")
+                Text("Assigned in \(monthName)")
             } footer: {
-                if let funding, funding.assigned > 0 {
+                if let funding, funding.assigned > 0, !isPast {
                     Text(fundingText(funding))
+                } else if !isPast && repeating {
+                    Text("Your plan repeats on its own each month, so you don't have to assign it again.")
                 }
             }
 
             Section {
                 ForEach(transactions) { TransactionRow(transaction: $0) }
             } header: {
-                Text(transactions.isEmpty ? "No transactions this month" : "This month")
+                Text(transactions.isEmpty ? "No transactions in \(monthName)" : monthName)
             } footer: {
                 Text("Long-press a transaction to move that merchant to a different bucket.")
             }
@@ -75,8 +120,13 @@ struct CategoryDetailView: View {
         }
         .navigationTitle(category.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { amountText = String(Int(category.monthlyAmount)) }
+        .onAppear { syncFields() }
+        .onChange(of: funding?.assigned) { _, _ in if !editing { syncFields() } }
         .onChange(of: editing) { _, isEditing in if !isEditing { commit() } }
+        .onChange(of: repeating) { _, _ in commit() }
+        .sheet(item: $moving) { request in
+            MoveMoneySheet(month: month, from: request.from, to: request.to, amount: request.amount, title: request.title)
+        }
         .confirmationDialog("Delete \(category.name)?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 store.deleteBucket(categoryId)
@@ -87,9 +137,15 @@ struct CategoryDetailView: View {
         }
     }
 
+    private func syncFields() {
+        let engine = store.engine
+        amountText = engine.assigned(categoryId, in: store.viewMonth).plainAmount
+        repeating = engine.assignments[Day.monthKey(store.viewMonth)]?[categoryId] == nil
+    }
+
     private func fundingText(_ funding: BudgetEngine.BucketFunding) -> String {
         if funding.fromExpected < 0.5 {
-            return "Fully backed by income that's already arrived this month."
+            return "Fully backed by income that's already arrived."
         }
         let waiting = "\(funding.fromExpected.currency()) is waiting on pay that hasn't arrived yet"
         let when = funding.waitingOn.map { " (\($0.shortDay))" } ?? ""
@@ -101,9 +157,28 @@ struct CategoryDetailView: View {
 
     private func commit() {
         editing = false
-        if let value = Double(amountText.replacingOccurrences(of: ",", with: "")) {
-            store.setBudget(categoryId, amount: value)
+        guard let value = Double(amountText.replacingOccurrences(of: ",", with: "")) else { return }
+        let month = store.viewMonth
+        let isPast = Day.monthKey(month) < store.engine.currentMonthKey
+        let current = store.engine.assigned(categoryId, in: month)
+        let followsPlan = store.engine.assignments[Day.monthKey(month)]?[categoryId] == nil
+        // Nothing changed: don't turn a repeating amount into a one-off.
+        if abs(value - current) < 0.005 && repeating == followsPlan { return }
+        store.setAssigned(categoryId, in: month, amount: max(0, value), repeating: repeating && !isPast)
+    }
+}
+
+private struct AmountLine: View {
+    var label: String
+    var value: Double
+
+    var body: some View {
+        HStack {
+            Text(label).foregroundStyle(.secondary)
+            Spacer()
+            Text((value >= 0 ? "" : "\u{2212}") + abs(value).currency(cents: true)).monospacedDigit()
         }
+        .font(.subheadline)
     }
 }
 

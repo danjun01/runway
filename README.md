@@ -102,7 +102,7 @@ cd ios && xcodegen generate && xcodebuild test -project Runway.xcodeproj -scheme
 cd backend && npm run typecheck
 ```
 
-CI runs both on every push (`.github/workflows/ci.yml`).
+Run both before merging.
 
 ## Before anyone else uses it
 

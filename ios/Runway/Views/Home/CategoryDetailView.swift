@@ -185,15 +185,23 @@ private struct AmountLine: View {
 struct TransactionRow: View {
     @Environment(AppStore.self) private var store
     var transaction: Transaction
+    @State private var editing = false
+
+    private var canEdit: Bool {
+        transaction.category != "INCOME" && transaction.detailedCategory != "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"
+    }
 
     var body: some View {
         let category = store.bucket(for: transaction)
+        let parts = store.engine.allocations(for: transaction)
         HStack(spacing: 12) {
             CategoryIcon(symbol: category?.symbol ?? (transaction.amount < 0 ? "arrow.down.left" : "arrow.left.arrow.right"),
                          color: transaction.amount < 0 ? Theme.positive : Theme.accent)
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.displayName).font(.subheadline.weight(.medium)).lineLimit(1)
-                Text(transaction.pending ? "Pending" : (category?.name ?? (transaction.category == "INCOME" ? "Income" : "Transfer")))
+                Text(transaction.pending ? "Pending"
+                     : parts.count > 1 ? "Split across \(parts.count) buckets"
+                     : (category?.name ?? (transaction.category == "INCOME" ? "Income" : "Transfer")))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -202,8 +210,15 @@ struct TransactionRow: View {
                 .monospacedDigit()
                 .foregroundStyle(transaction.amount < 0 ? Theme.positive : .primary)
         }
+        .contentShape(Rectangle())
+        .onTapGesture { if canEdit { editing = true } }
+        .sheet(isPresented: $editing) {
+            TransactionEditSheet(transaction: transaction, bucketId: category?.id ?? "other",
+                                 allocations: parts)
+        }
         .contextMenu {
-            if transaction.category != "INCOME" && transaction.detailedCategory != "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" {
+            if canEdit {
+                Button("Change or split…", systemImage: "pencil") { editing = true }
                 Section("Move \(transaction.displayName) to") {
                     ForEach(store.budgets) { bucket in
                         Button {

@@ -28,6 +28,24 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
 
+                    let reviewCount = isCurrent ? engine.toReview.count : 0
+                    if reviewCount > 0 {
+                        Button {
+                            store.selectedTab = .activity
+                        } label: {
+                            Card {
+                                HStack {
+                                    Label(reviewCount == 1 ? "1 new transaction to review" : "\(reviewCount) new transactions to review",
+                                          systemImage: "tray.full.fill")
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     let overspent = plan.overspent
                     if !overspent.isEmpty {
                         OverspentCard(buckets: overspent) { covering = $0 }

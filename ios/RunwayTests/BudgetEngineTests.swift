@@ -292,4 +292,47 @@ final class BudgetEngineTests: XCTestCase {
                                   assignments: ["2026-09": [insurance.id: 100]], budgetStart: "2026-09")
         XCTAssertEqual(engine.billsRemaining, 200) // 100 saved in September + 100 this month
     }
+
+    // MARK: Review inbox, one-off changes, and splits
+
+    func testOneOffChangeDoesNotMoveTheMerchant() {
+        let a = txn("2026-10-05", 40, "GENERAL_MERCHANDISE", name: "Target")
+        let b = txn("2026-10-06", 60, "GENERAL_MERCHANDISE", name: "Target")
+        let engine = BudgetEngine(snapshot: snapshot(transactions: [a, b]), budgets: BudgetCategory.defaults,
+                                  monthlySavingsGoal: 0, today: today, transactionBuckets: [a.id: "groceries"])
+        XCTAssertEqual(engine.spent(in: "groceries"), 40)
+        XCTAssertEqual(engine.spent(in: "shopping"), 60)
+    }
+
+    func testOneOffChangeCanMakeATransferSpending() {
+        let venmo = txn("2026-10-05", 80, "TRANSFER_OUT", name: "Venmo")
+        let engine = BudgetEngine(snapshot: snapshot(transactions: [venmo]), budgets: BudgetCategory.defaults,
+                                  monthlySavingsGoal: 0, today: today, transactionBuckets: [venmo.id: "fun"])
+        XCTAssertEqual(engine.spent(in: "fun"), 80)
+    }
+
+    func testSplitSpreadsATransactionAcrossBuckets() {
+        let costco = txn("2026-10-05", 200, "GENERAL_MERCHANDISE", name: "Costco")
+        let engine = BudgetEngine(snapshot: snapshot(transactions: [costco]), budgets: BudgetCategory.defaults,
+                                  monthlySavingsGoal: 0, today: today, splits: [costco.id: ["groceries": 150]])
+        // The 50 the split doesn't place stays in the usual bucket.
+        XCTAssertEqual(engine.spent(in: "groceries"), 150)
+        XCTAssertEqual(engine.spent(in: "shopping"), 50)
+        XCTAssertTrue(engine.isSplit(costco))
+        XCTAssertEqual(engine.transactions(in: "groceries").map(\.id), [costco.id])
+        XCTAssertEqual(engine.transactions(in: "shopping").map(\.id), [costco.id])
+    }
+
+    func testReviewInboxHoldsRecentUnapprovedSpending() {
+        let old = txn("2026-09-01", 10, "ENTERTAINMENT")
+        let approved = txn("2026-10-10", 20, "ENTERTAINMENT")
+        let fresh = txn("2026-10-18", 30, "ENTERTAINMENT")
+        let pay = txn("2026-10-16", -1000, "INCOME", "INCOME_WAGES")
+        var pending = txn("2026-10-19", 5, "ENTERTAINMENT")
+        pending.pending = true
+        let engine = BudgetEngine(snapshot: snapshot(transactions: [old, approved, fresh, pay, pending]),
+                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today,
+                                  reviewed: [approved.id])
+        XCTAssertEqual(engine.toReview.map(\.id), [fresh.id])
+    }
 }

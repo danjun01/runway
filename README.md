@@ -44,6 +44,12 @@ Runway finds recurring income from Plaid's recurring streams and from regular de
 
 The budget is a zero-based monthly plan, like YNAB, with one difference: you can assign income you're expecting, not just money that's already in the account. Each month's paychecks are marked **arrived** or **expected**, and the plan shows how much is left to assign. Arrived money backs your savings goal and bills first, then flexible buckets; anything that depends on a paycheck that hasn't landed says so ("$300 waits on Oct 30 pay"). Add your own buckets with **New bucket**, and long-press any transaction to move that merchant to a different bucket.
 
+### Rollover and moving money
+
+Money you don't spend stays in its bucket and rolls into next month, so you can save up for a bill that only comes once a year. Your plan repeats on its own each month; change one month without touching the rest by turning off **Same amount every month** on a bucket. Use the arrows at the top of the Budget tab to look back at past months or assign ahead into future ones.
+
+If a bucket goes over, the Budget tab shows it with a **Cover** button that moves money in from the bucket with the most to spare (or from left to assign). You can also move money between any two buckets from a bucket's screen. Overspending you don't cover comes out of next month's money to assign, and money you left unassigned rolls into next month.
+
 ## Run it on your Mac
 
 You need Xcode 16 or newer, Node 20+, and [Homebrew](https://brew.sh).

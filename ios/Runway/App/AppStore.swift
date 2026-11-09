@@ -15,6 +15,13 @@ final class AppStore {
     var incomeSources: [IncomeSource] = []
     /// Merchant key -> bucket id, set by moving a transaction to a bucket.
     var bucketRules: [String: String] = [:]
+    /// Month ("yyyy-MM") -> bucket id -> amount, for months that differ from
+    /// the repeating plan. Past months are written out in full when they close.
+    var assignments: [String: [String: Double]] = [:]
+    /// The budget's first month ("yyyy-MM"). Money rolls over from here on.
+    var budgetStart: String?
+    /// The month the Budget tab is showing.
+    var viewMonth: Date = Day.startOfMonth(.now)
     var hasOnboarded = false
     var isDemo = false
     var chat: [ChatMessage] = []
@@ -42,6 +49,7 @@ final class AppStore {
         }
         startDemo()
         budgets = engine.suggestedBudgets()
+        closePastMonths()
         hasOnboarded = !args.contains("-onboarding")
         if let i = args.firstIndex(of: "-tab"), i + 1 < args.count {
             selectedTab = ["activity": .activity, "ask": .ask, "accounts": .accounts][args[i + 1]] ?? .home
@@ -51,7 +59,7 @@ final class AppStore {
 
     var engine: BudgetEngine {
         BudgetEngine(snapshot: snapshot ?? DemoData.empty, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
-                     savedIncome: incomeSources, bucketRules: bucketRules)
+                     savedIncome: incomeSources, bucketRules: bucketRules, assignments: assignments, budgetStart: budgetStart)
     }
 
     var institutions: [Institution] { snapshot?.institutions ?? [] }
@@ -80,6 +88,7 @@ final class AppStore {
     }
 
     func refresh() async {
+        closePastMonths()
         guard !isDemo else {
             snapshot = DemoData.snapshot()
             return
@@ -116,22 +125,71 @@ final class AppStore {
     func startDemo() {
         isDemo = true
         snapshot = DemoData.snapshot()
+        // Start the demo budget last month so rollover has something to show.
+        budgetStart = Day.monthKey(Day.addMonths(-1, to: .now))
     }
 
     // MARK: Budget
 
     func applySuggestedBudget() {
+        closePastMonths()
         budgets = engine.suggestedBudgets()
         save()
     }
 
+    /// Sets a bucket's repeating monthly amount, starting this month.
     func setBudget(_ id: String, amount: Double) {
         guard let index = budgets.firstIndex(where: { $0.id == id }) else { return }
+        closePastMonths()
         budgets[index].monthlyAmount = max(0, amount)
+        assignments[Day.monthKey(.now)]?[id] = nil
+        save()
+    }
+
+    /// Assigns an amount to a bucket in one month. With `repeating`, it
+    /// becomes the bucket's amount for every month from this one on.
+    func setAssigned(_ id: String, in month: Date, amount: Double, repeating: Bool) {
+        let key = Day.monthKey(month)
+        closePastMonths()
+        if repeating, key == Day.monthKey(.now) {
+            setBudget(id, amount: amount)
+            return
+        }
+        if repeating, key > Day.monthKey(.now), let index = budgets.firstIndex(where: { $0.id == id }) {
+            // Months between now and then keep what they had.
+            var m = Day.addMonths(0, to: .now)
+            while Day.monthKey(m) < key {
+                let mk = Day.monthKey(m)
+                if assignments[mk]?[id] == nil { assignments[mk, default: [:]][id] = budgets[index].monthlyAmount }
+                m = Day.addMonths(1, to: m)
+            }
+            budgets[index].monthlyAmount = max(0, amount)
+            assignments[key]?[id] = nil
+            save()
+            return
+        }
+        assignments[key, default: [:]][id] = amount
+        save()
+    }
+
+    /// Moves money between buckets in a month. A nil bucket means "left to
+    /// assign": moving from it assigns new money, moving to it un-assigns.
+    func moveMoney(_ amount: Double, from: String?, to: String?, in month: Date) {
+        guard amount > 0, from != to else { return }
+        closePastMonths()
+        let engine = self.engine
+        let key = Day.monthKey(month)
+        if let from {
+            assignments[key, default: [:]][from] = engine.assigned(from, in: month) - amount
+        }
+        if let to {
+            assignments[key, default: [:]][to] = engine.assigned(to, in: month) + amount
+        }
         save()
     }
 
     func addBucket(_ category: BudgetCategory) {
+        closePastMonths()
         budgets.append(category)
         save()
     }
@@ -145,7 +203,28 @@ final class AppStore {
     func deleteBucket(_ id: String) {
         budgets.removeAll { $0.id == id }
         bucketRules = bucketRules.filter { $0.value != id }
+        for key in assignments.keys { assignments[key]?[id] = nil }
         save()
+    }
+
+    /// Writes out every bucket's amount for each month that has ended, so
+    /// later changes to the repeating plan don't rewrite history (and the
+    /// rollover it produced).
+    func closePastMonths() {
+        let current = Day.monthKey(.now)
+        guard let start = budgetStart else {
+            if hasOnboarded || isPreview { budgetStart = current }
+            return
+        }
+        var m = Day.month(start)
+        var key = Day.monthKey(m)
+        while key < current {
+            for category in budgets where assignments[key]?[category.id] == nil {
+                assignments[key, default: [:]][category.id] = category.monthlyAmount
+            }
+            m = Day.addMonths(1, to: m)
+            key = Day.monthKey(m)
+        }
     }
 
     /// Sends this merchant's transactions, past and future, to a bucket.
@@ -191,6 +270,8 @@ final class AppStore {
 
     func finishOnboarding() {
         hasOnboarded = true
+        if budgetStart == nil { budgetStart = Day.monthKey(.now) }
+        closePastMonths()
         save()
     }
 
@@ -200,6 +281,9 @@ final class AppStore {
         monthlySavingsGoal = 0
         incomeSources = []
         bucketRules = [:]
+        assignments = [:]
+        budgetStart = nil
+        viewMonth = Day.startOfMonth(.now)
         hasOnboarded = false
         isDemo = false
         chat = []
@@ -247,6 +331,8 @@ final class AppStore {
         // Optional so state saved by earlier versions still loads.
         var incomeSources: [IncomeSource]?
         var bucketRules: [String: String]?
+        var assignments: [String: [String: Double]]?
+        var budgetStart: String?
         var hasOnboarded: Bool
         var isDemo: Bool
         var chat: [ChatMessage]
@@ -259,7 +345,8 @@ final class AppStore {
     func save() {
         guard !isPreview else { return }
         let state = Persisted(snapshot: isDemo ? nil : snapshot, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
-                              incomeSources: incomeSources, bucketRules: bucketRules, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
+                              incomeSources: incomeSources, bucketRules: bucketRules,
+                              assignments: assignments, budgetStart: budgetStart, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
         do {
             try FileManager.default.createDirectory(at: URL.applicationSupportDirectory, withIntermediateDirectories: true)
             try JSONEncoder().encode(state).write(to: Self.fileURL, options: [.atomic, .completeFileProtection])
@@ -277,8 +364,12 @@ final class AppStore {
         monthlySavingsGoal = state.monthlySavingsGoal
         incomeSources = state.incomeSources ?? []
         bucketRules = state.bucketRules ?? [:]
+        assignments = state.assignments ?? [:]
+        budgetStart = state.budgetStart
         hasOnboarded = state.hasOnboarded
         chat = state.chat
+        // Existing budgets start rolling over from the month this version first opens.
+        closePastMonths()
     }
 }
 

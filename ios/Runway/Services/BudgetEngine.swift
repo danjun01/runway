@@ -13,6 +13,12 @@ struct BudgetEngine {
     var savedIncome: [IncomeSource] = []
     /// Merchant key -> bucket id, from "move to bucket".
     var bucketRules: [String: String] = [:]
+    /// Month ("yyyy-MM") -> bucket id -> amount assigned that month, for
+    /// months that differ from the repeating plan.
+    var assignments: [String: [String: Double]] = [:]
+    /// The budget's first month ("yyyy-MM"). Money rolls over from here on.
+    /// Nil means the budget starts this month.
+    var budgetStart: String?
 
     var cal: Calendar { Day.calendar }
     var monthStart: Date { Day.startOfMonth(today) }
@@ -25,28 +31,32 @@ struct BudgetEngine {
         BudgetCategory.bucketId(for: t, rules: bucketRules, budgets: budgets)
     }
 
-    var spendingThisMonth: [Transaction] {
-        snapshot.transactions.filter { t in
-            t.day >= monthStart && t.day <= monthEnd && bucketId(for: t) != nil
+    var spendingThisMonth: [Transaction] { spending(in: monthStart) }
+
+    func spending(in month: Date) -> [Transaction] {
+        let start = Day.startOfMonth(month), end = Day.endOfMonth(month)
+        return snapshot.transactions.filter { t in
+            t.day >= start && t.day <= end && bucketId(for: t) != nil
         }
     }
 
-    func spent(in categoryId: String) -> Double {
-        spendingThisMonth
-            .filter { bucketId(for: $0) == categoryId }
-            .reduce(0) { $0 + $1.amount }
+    func spent(in categoryId: String) -> Double { spent(in: categoryId, month: monthStart) }
+
+    func spent(in categoryId: String, month: Date) -> Double {
+        transactions(in: categoryId, month: month).reduce(0) { $0 + $1.amount }
     }
 
-    func transactions(in categoryId: String) -> [Transaction] {
-        spendingThisMonth.filter { bucketId(for: $0) == categoryId }
+    func transactions(in categoryId: String, month: Date? = nil) -> [Transaction] {
+        spending(in: month ?? monthStart).filter { bucketId(for: $0) == categoryId }
     }
 
     var totalBudgeted: Double { budgets.reduce(0) { $0 + $1.monthlyAmount } }
     var totalSpent: Double { spendingThisMonth.reduce(0) { $0 + $1.amount } }
 
-    /// Fixed bills you've budgeted for but haven't paid yet this month.
+    /// Money in bill buckets that hasn't been paid out yet: this month's
+    /// assignment plus anything saved up from earlier months.
     var billsRemaining: Double {
-        budgets.filter(\.isFixed).reduce(0) { $0 + max(0, $1.monthlyAmount - spent(in: $1.id)) }
+        plan.buckets.filter(\.category.isFixed).reduce(0) { $0 + max(0, $1.available) }
     }
 
     // MARK: Suggested budget
@@ -264,12 +274,15 @@ struct BudgetEngine {
                 incomeArrivedThisMonth: plan.arrived.rounded2,
                 incomeExpectedRestOfMonth: plan.expected.rounded2,
                 savingsGoal: plan.savingsGoal.rounded2,
+                unassignedFromLastMonth: plan.carriedOver.rounded2,
+                overspentLastMonth: plan.overspentLastMonth.rounded2,
                 totalAssigned: plan.assigned.rounded2,
                 leftToAssign: plan.leftToAssign.rounded2,
-                method: "Zero-based monthly plan. This month's income (arrived + expected) is assigned to the savings goal, then bills, then flexible buckets, in that order; arrived money backs the earliest assignments and the rest waits on projected paychecks.",
-                buckets: plan.buckets.filter { $0.assigned > 0 || $0.spent > 0 }.map {
+                method: "Zero-based monthly plan with rollover. Money to assign = this month's income (arrived + expected) + last month's unassigned money - last month's overspending. It's assigned to the savings goal, then bills, then flexible buckets; arrived money backs the earliest assignments and the rest waits on projected paychecks. Each bucket's available = rolledOver (unspent money from earlier months) + assigned this month - spent. A negative available means the bucket is overspent; the user can cover it by moving money from another bucket.",
+                buckets: plan.buckets.filter { $0.funded != 0 || $0.spent > 0 }.map {
                     ChatContext.BucketLine(bucket: $0.category.name, kind: $0.category.isFixed ? "bill" : "flexible",
-                                           assigned: $0.assigned, spent: $0.spent.rounded2, available: $0.available.rounded2,
+                                           rolledOver: $0.carried.rounded2,
+                                           assigned: $0.assigned.rounded2, spent: $0.spent.rounded2, available: $0.available.rounded2,
                                            backedByArrivedIncome: $0.fromArrived.rounded2,
                                            waitingOnProjectedIncome: $0.fromExpected.rounded2,
                                            waitingOnPaycheckDate: $0.waitingOn.map(Day.string))
@@ -361,13 +374,14 @@ struct ChatContext: Encodable {
         var state: String
     }
     struct PlanInfo: Encodable {
-        var incomeArrivedThisMonth, incomeExpectedRestOfMonth, savingsGoal, totalAssigned, leftToAssign: Double
+        var incomeArrivedThisMonth, incomeExpectedRestOfMonth, savingsGoal: Double
+        var unassignedFromLastMonth, overspentLastMonth, totalAssigned, leftToAssign: Double
         var method: String
         var buckets: [BucketLine]
     }
     struct BucketLine: Encodable {
         var bucket, kind: String
-        var assigned, spent, available, backedByArrivedIncome, waitingOnProjectedIncome: Double
+        var rolledOver, assigned, spent, available, backedByArrivedIncome, waitingOnProjectedIncome: Double
         var waitingOnPaycheckDate: String?
     }
     struct AccountLine: Encodable {

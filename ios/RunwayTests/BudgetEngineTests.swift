@@ -379,4 +379,59 @@ final class BudgetEngineTests: XCTestCase {
         let engine = BudgetEngine(snapshot: snapshot(), budgets: setup.budgets, monthlySavingsGoal: 0, today: today)
         XCTAssertEqual(engine.plan.buckets.first { $0.id == setup.id }?.targetRemaining, 0)
     }
+
+    // MARK: Insights
+
+    func testAgeOfMoneyUsesOldestMoneyFirst() throws {
+        // Checkpoint math: checking ends at 2,000. Pay of 1,000 on Sep 1 and
+        // ten 10 dollar purchases on Sep 21-30, so opening money = 2,000 + 100 - 1,000 = 1,100
+        // dated Sep 1 (first transaction) is spent first.
+        var txns = [txn("2026-09-01", -1000, "INCOME", "INCOME_WAGES", name: "GLOBEX")]
+        for day in 21...30 { txns.append(txn("2026-09-\(day)", 10, "ENTERTAINMENT")) }
+        let engine = BudgetEngine(snapshot: snapshot(transactions: txns), budgets: BudgetCategory.defaults,
+                                  monthlySavingsGoal: 0, today: today)
+        // Every purchase is paid from money that arrived Sep 1: ages 20...29, average 24.5.
+        XCTAssertEqual(try XCTUnwrap(engine.ageOfMoney), 25)
+    }
+
+    func testAgeOfMoneyNeedsTenPurchases() {
+        let engine = BudgetEngine(snapshot: snapshot(transactions: [txn("2026-10-01", 10, "ENTERTAINMENT")]),
+                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today)
+        XCTAssertNil(engine.ageOfMoney)
+    }
+
+    func testReconcileFindsMoneyTransactionsDontExplain() {
+        let checking = account("chk", type: "depository", subtype: "checking", balance: 1000)
+        let old = txn("2026-10-01", 50, "ENTERTAINMENT")
+        let checkpoint = Reconcile.checkpoint(for: checking, transactions: [old])
+        XCTAssertEqual(checkpoint.balance, 1000)
+
+        var later = checking
+        later.currentBalance = 880
+        let coffee = txn("2026-10-02", 20, "FOOD_AND_DRINK")
+        // 1,000 - 20 should be 980; the bank says 880, so 100 is unexplained.
+        XCTAssertEqual(Reconcile.drift(since: checkpoint, account: later, transactions: [old, coffee]), -100)
+        later.currentBalance = 980
+        XCTAssertEqual(Reconcile.drift(since: checkpoint, account: later, transactions: [old, coffee]), 0)
+    }
+
+    func testReconcileTreatsCardChargesAsMoreOwed() {
+        let card = account("visa", type: "credit", subtype: "credit card", balance: 500)
+        let checkpoint = Reconcile.checkpoint(for: card, transactions: [])
+        var later = card
+        later.currentBalance = 560
+        let charge = txn("2026-10-02", 60, "GENERAL_MERCHANDISE", account: "visa")
+        XCTAssertEqual(Reconcile.drift(since: checkpoint, account: later, transactions: [charge]), 0)
+    }
+
+    func testSpendingHistoryEndsThisMonth() {
+        let engine = BudgetEngine(snapshot: snapshot(transactions: [dining("2026-09-10", 40), dining("2026-10-05", 25)]),
+                                  budgets: BudgetCategory.defaults, monthlySavingsGoal: 0, today: today)
+        let history = engine.spendingHistory(months: 3)
+        XCTAssertEqual(history.map(\.id), ["2026-08", "2026-09", "2026-10"])
+        XCTAssertEqual(history.map(\.total), [0, 40, 25])
+        let trend = engine.bucketTrends().first { $0.id == "dining" }
+        XCTAssertEqual(trend?.thisMonth, 25)
+        XCTAssertEqual(trend?.usual, 40) // only September had spending
+    }
 }

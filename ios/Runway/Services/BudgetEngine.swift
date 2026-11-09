@@ -360,7 +360,8 @@ struct BudgetEngine {
                           category: isSplit($0) ? "split: " + allocations(for: $0).map { "\(name(of: $0.bucketId)) \($0.amount.rounded2)" }.joined(separator: ", ")
                             : bucketId(for: $0).map(name(of:)) ?? $0.category.lowercased(),
                           account: accountName[$0.accountId] ?? "", pending: $0.pending)
-                }
+                },
+            ageOfMoneyDays: ageOfMoney
         )
     }
 
@@ -484,6 +485,8 @@ struct ChatContext: Encodable {
     var spendingByMonth: [MonthTotal]
     var recurringBills: [Recurring]
     var recentTransactions: [Txn]
+    /// Average days between money arriving and being spent (first in, first out). Nil until there's enough history.
+    var ageOfMoneyDays: Int?
 }
 
 extension Double {

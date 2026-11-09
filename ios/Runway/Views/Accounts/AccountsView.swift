@@ -20,6 +20,12 @@ struct AccountsView: View {
                     .disabled(store.isLinking)
                 }
 
+                if !store.balanceDrift.isEmpty {
+                    Section {
+                        Text("Runway checks every sync that each balance matches its transactions, so you never have to reconcile by hand. A mismatch usually means a transaction is missing or still pending. It clears on its own once things line up, or swipe the account to dismiss it.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
                 group("Cash", accounts.filter(\.isSpendableCash))
                 group("Savings", accounts.filter(\.isSavings))
                 group("Credit cards", accounts.filter(\.isCredit))
@@ -91,6 +97,14 @@ struct AccountsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(account.displayName).font(.body.weight(.medium))
                             Text(account.institution).font(.caption).foregroundStyle(.secondary)
+                            if let drift = store.balanceDrift[account.id] {
+                                Label("\(abs(drift).currency(cents: true)) \(drift > 0 ? "more" : "less") than its transactions add up to",
+                                      systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption).foregroundStyle(Theme.warning)
+                            } else if store.checkpoints[account.id] != nil {
+                                Label("Matches its transactions", systemImage: "checkmark.seal.fill")
+                                    .font(.caption).foregroundStyle(Theme.positive)
+                            }
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 2) {
@@ -98,6 +112,11 @@ struct AccountsView: View {
                             if account.isCredit, let limit = account.limit {
                                 Text("of \(limit.currency()) limit").font(.caption).foregroundStyle(.secondary)
                             }
+                        }
+                    }
+                    .swipeActions {
+                        if store.balanceDrift[account.id] != nil {
+                            Button("Looks right") { store.dismissDrift(account.id) }.tint(Theme.positive)
                         }
                     }
                 }

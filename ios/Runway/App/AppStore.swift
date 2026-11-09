@@ -26,6 +26,10 @@ final class AppStore {
     var splits: [String: [String: Double]] = [:]
     /// Transactions approved in the review inbox.
     var reviewed: Set<String> = []
+    /// Each account's balance and transactions as of the last sync.
+    var checkpoints: [String: BalanceCheckpoint] = [:]
+    /// Account id -> money the account's transactions don't explain.
+    var balanceDrift: [String: Double] = [:]
     /// The month the Budget tab is showing.
     var viewMonth: Date = Day.startOfMonth(.now)
     var hasOnboarded = false
@@ -103,7 +107,9 @@ final class AppStore {
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            snapshot = try await api.snapshot()
+            let fresh = try await api.snapshot()
+            snapshot = fresh
+            reconcile(fresh)
             save()
         } catch {
             errorMessage = error.localizedDescription
@@ -118,6 +124,29 @@ final class AppStore {
             if let snapshot, !snapshot.transactions.isEmpty { return }
             try? await Task.sleep(for: .seconds(3))
         }
+    }
+
+    /// Checks each account's new balance against its new transactions and
+    /// remembers any gap until it closes on its own or the user dismisses it.
+    /// A pending charge that briefly shows in a balance tends to cancel out
+    /// once it posts.
+    private func reconcile(_ snapshot: Snapshot) {
+        for account in snapshot.accounts {
+            if let last = checkpoints[account.id] {
+                let drift = (balanceDrift[account.id] ?? 0)
+                    + Reconcile.drift(since: last, account: account, transactions: snapshot.transactions)
+                balanceDrift[account.id] = abs(drift) >= 1 ? drift.rounded2 : nil
+            }
+            checkpoints[account.id] = Reconcile.checkpoint(for: account, transactions: snapshot.transactions)
+        }
+        let live = Set(snapshot.accounts.map(\.id))
+        checkpoints = checkpoints.filter { live.contains($0.key) }
+        balanceDrift = balanceDrift.filter { live.contains($0.key) }
+    }
+
+    func dismissDrift(_ accountId: String) {
+        balanceDrift[accountId] = nil
+        save()
     }
 
     func unlink(_ institution: Institution) async {
@@ -361,6 +390,8 @@ final class AppStore {
         transactionBuckets = [:]
         splits = [:]
         reviewed = []
+        checkpoints = [:]
+        balanceDrift = [:]
         viewMonth = Day.startOfMonth(.now)
         hasOnboarded = false
         isDemo = false
@@ -414,6 +445,8 @@ final class AppStore {
         var transactionBuckets: [String: String]?
         var splits: [String: [String: Double]]?
         var reviewed: [String]?
+        var checkpoints: [String: BalanceCheckpoint]?
+        var balanceDrift: [String: Double]?
         var hasOnboarded: Bool
         var isDemo: Bool
         var chat: [ChatMessage]
@@ -435,7 +468,8 @@ final class AppStore {
         let state = Persisted(snapshot: isDemo ? nil : snapshot, budgets: budgets, monthlySavingsGoal: monthlySavingsGoal,
                               incomeSources: incomeSources, bucketRules: bucketRules,
                               assignments: assignments, budgetStart: budgetStart,
-                              transactionBuckets: transactionBuckets, splits: splits, reviewed: prunedReviewed, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
+                              transactionBuckets: transactionBuckets, splits: splits, reviewed: prunedReviewed,
+                              checkpoints: checkpoints, balanceDrift: balanceDrift, hasOnboarded: hasOnboarded, isDemo: isDemo, chat: Array(chat.suffix(100)))
         do {
             try FileManager.default.createDirectory(at: URL.applicationSupportDirectory, withIntermediateDirectories: true)
             try JSONEncoder().encode(state).write(to: Self.fileURL, options: [.atomic, .completeFileProtection])
@@ -458,6 +492,8 @@ final class AppStore {
         transactionBuckets = state.transactionBuckets ?? [:]
         splits = state.splits ?? [:]
         reviewed = Set(state.reviewed ?? [])
+        checkpoints = state.checkpoints ?? [:]
+        balanceDrift = state.balanceDrift ?? [:]
         // First open with the review inbox: start it empty instead of
         // asking about everything already in the history.
         if state.reviewed == nil, let snapshot = state.snapshot { reviewed = Set(snapshot.transactions.map(\.id)) }

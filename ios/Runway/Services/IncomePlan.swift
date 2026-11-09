@@ -213,6 +213,10 @@ extension BudgetEngine {
         var fromExpected: Double
         /// The latest projected paycheck this bucket is waiting on.
         var waitingOn: Date?
+        /// What the bucket's target asks for this month in total, and how
+        /// much of that still needs assigning. Zero without a target.
+        var targetThisMonth: Double = 0
+        var targetRemaining: Double = 0
         /// What's left to spend. Negative means the bucket is overspent.
         var available: Double { carried + assigned - spent }
         /// Money the bucket had to spend this month.
@@ -247,6 +251,8 @@ extension BudgetEngine {
             max(0, min(expected, savingsGoal + max(0, assigned) - arrived - max(0, startingFunds)))
         }
         var overspent: [BucketFunding] { buckets.filter(\.isOverspent) }
+        /// Money still needed this month to keep every target on track.
+        var targetsRemaining: Double { buckets.reduce(0) { $0 + $1.targetRemaining } }
     }
 
     var plan: Plan { plan(for: monthStart) }
@@ -281,12 +287,36 @@ extension BudgetEngine {
         let buckets = ordered.map { category in
             let assigned = self.assigned(category.id, in: month)
             let source = draw(assigned)
-            return BucketFunding(category: category, carried: roll.carried[category.id] ?? 0, assigned: assigned,
+            let carried = roll.carried[category.id] ?? 0
+            let goal = targetThisMonth(category, carried: carried, month: month)
+            return BucketFunding(category: category, carried: carried, assigned: assigned,
                                  spent: spent(in: category.id, month: month),
-                                 fromArrived: source.arrived, fromExpected: source.expected, waitingOn: source.last)
+                                 fromArrived: source.arrived, fromExpected: source.expected, waitingOn: source.last,
+                                 targetThisMonth: goal, targetRemaining: max(0, goal - assigned))
         }
         return Plan(month: month, paychecks: paychecks, savingsGoal: monthlySavingsGoal, carriedOver: roll.unassigned,
                     overspentLastMonth: roll.overspent, buckets: buckets)
+    }
+
+    // MARK: Targets
+
+    /// What a bucket's target asks to be assigned in `month`, given what
+    /// rolled into it. Saving up spreads what's still missing evenly over
+    /// the months left, counting this one and the target month; a refill
+    /// tops the bucket up to its amount.
+    func targetThisMonth(_ category: BudgetCategory, carried: Double, month: Date) -> Double {
+        guard let target = category.target, target.amount > 0 else { return 0 }
+        switch target.kind {
+        case .refill:
+            return max(0, target.amount - carried)
+        case .saveBy:
+            guard let by = target.by else { return 0 }
+            let key = Day.monthKey(month)
+            guard key <= by else { return 0 }
+            let months = (cal.dateComponents([.month], from: Day.startOfMonth(month), to: Day.month(by)).month ?? 0) + 1
+            let missing = max(0, target.amount - carried)
+            return (missing / Double(max(1, months)) * 100).rounded(.up) / 100
+        }
     }
 
     // MARK: Months and rollover

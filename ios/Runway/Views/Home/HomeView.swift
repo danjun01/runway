@@ -28,6 +28,10 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
 
+                    if plan.targetsRemaining > 0.5 {
+                        FundTargetsCard(plan: plan)
+                    }
+
                     let reviewCount = isCurrent ? engine.toReview.count : 0
                     if reviewCount > 0 {
                         Button {
@@ -291,6 +295,10 @@ struct CategoryRow: View {
                             .foregroundStyle(funding.isOverspent ? Theme.negative : .secondary)
                     }
                     BudgetBar(spent: spent, budget: funding.funded)
+                    if funding.targetRemaining > 0.5 {
+                        Label("\(funding.targetRemaining.currency()) more to stay on target", systemImage: "target")
+                            .font(.caption).foregroundStyle(Theme.warning)
+                    }
                     if funding.fromExpected > 0.5, let date = funding.waitingOn {
                         Label("\(funding.fromExpected.currency()) waits on \(date.shortDay) pay", systemImage: "clock")
                             .font(.caption).foregroundStyle(.secondary)
@@ -526,6 +534,36 @@ private struct OverspentCard: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                 }
+            }
+        }
+    }
+}
+
+/// One tap to give every target what it needs this month.
+private struct FundTargetsCard: View {
+    @Environment(AppStore.self) private var store
+    var plan: BudgetEngine.Plan
+
+    var body: some View {
+        let need = plan.targetsRemaining
+        let canCover = max(0, min(need, plan.leftToAssign))
+        Card {
+            HStack(spacing: 12) {
+                CategoryIcon(symbol: "target")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Targets need \(need.currency()) more").font(.subheadline.weight(.semibold))
+                    Text(canCover >= need - 0.5
+                         ? "You have enough left to assign."
+                         : canCover > 0.5 ? "You can cover \(canCover.currency()) of it now." : "Nothing left to assign yet.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Fund") {
+                    withAnimation(.snappy) { _ = store.fundTargets(in: plan.month) }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(canCover < 0.5)
             }
         }
     }

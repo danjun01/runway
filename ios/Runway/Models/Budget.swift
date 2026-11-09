@@ -9,6 +9,9 @@ struct BudgetCategory: Codable, Equatable, Identifiable, Hashable {
     /// Bills (rent, utilities, loans) are reserved out of safe-to-spend until paid.
     var isFixed: Bool
     var monthlyAmount: Double
+    /// An optional goal for the bucket. Optional so saved budgets from
+    /// earlier versions still load.
+    var target: BucketTarget?
 
     var isCustom: Bool { id.hasPrefix("custom:") }
 
@@ -16,6 +19,29 @@ struct BudgetCategory: Codable, Equatable, Identifiable, Hashable {
         BudgetCategory(id: "custom:\(UUID().uuidString)", name: name, symbol: isFixed ? "doc.text.fill" : "tray.fill",
                        isFixed: isFixed, monthlyAmount: amount)
     }
+}
+
+/// What a bucket is working toward.
+struct BucketTarget: Codable, Equatable, Hashable {
+    enum Kind: String, Codable, CaseIterable, Identifiable {
+        /// Have `amount` saved by the month `by` (e.g. $1,200 car insurance by March).
+        case saveBy
+        /// Start every month with `amount` to spend, topping up what's left over.
+        case refill
+
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .saveBy: "Save up by a date"
+            case .refill: "Have the same amount each month"
+            }
+        }
+    }
+
+    var kind: Kind
+    var amount: Double
+    /// "yyyy-MM", for `saveBy`.
+    var by: String?
 }
 
 extension BudgetCategory {
